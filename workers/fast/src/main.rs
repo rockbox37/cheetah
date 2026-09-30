@@ -1,6 +1,5 @@
 use cheetah_fast::{fetch_page, FetchConfig};
 use clap::Parser;
-use redis::AsyncCommands;
 use reqwest::Client;
 use std::sync::Arc;
 use tokio::signal;
@@ -23,7 +22,7 @@ struct Args {
     stream: String,
 
     #[arg(long, default_value = "job_results")]
-    results_key: String,
+    results_prefix: String,
 }
 
 #[tokio::main]
@@ -60,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
 
     let http_client = Client::builder()
         .pool_max_idle_per_host(20)
+        .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let config = Arc::new(FetchConfig::default());
     let semaphore = Arc::new(Semaphore::new(args.concurrency));
@@ -144,19 +144,26 @@ async fn main() -> anyhow::Result<()> {
                 let mut task_conn = conn.clone();
                 let stream_name = args.stream.clone();
                 let group = args.group_name.clone();
-                let results_key = args.results_key.clone();
+                let results_prefix = args.results_prefix.clone();
 
                 tokio::spawn(async move {
                     let _permit = permit;
                     info!(url = %url, job_id = %job_id, "processing job");
 
                     let result = fetch_page(&client, &url, &cfg).await;
+                    let result_key = format!("{}:{}", results_prefix, job_id);
 
                     match result {
                         Ok(page) => {
                             let payload = serde_json::to_string(&page).unwrap_or_default();
-                            let _: Result<(), _> = task_conn
-                                .hset::<_, _, _, ()>(&results_key, &job_id, &payload)
+                            // P1 fix: Store results as individual keys with a 1-hour TTL
+                            // instead of hash fields (HSET has no per-field expiry).
+                            let _: Result<(), _> = redis::cmd("SET")
+                                .arg(&result_key)
+                                .arg(&payload)
+                                .arg("EX")
+                                .arg(3600_u64)
+                                .query_async(&mut task_conn)
                                 .await;
                             info!(url = %url, job_id = %job_id, status = page.status_code, "job complete");
                         }
@@ -167,12 +174,12 @@ async fn main() -> anyhow::Result<()> {
                                 "error": e.to_string(),
                                 "fetched_at": chrono::Utc::now(),
                             });
-                            let _: Result<(), _> = task_conn
-                                .hset::<_, _, _, ()>(
-                                    &results_key,
-                                    &job_id,
-                                    error_payload.to_string(),
-                                )
+                            let _: Result<(), _> = redis::cmd("SET")
+                                .arg(&result_key)
+                                .arg(error_payload.to_string())
+                                .arg("EX")
+                                .arg(3600_u64)
+                                .query_async(&mut task_conn)
                                 .await;
                             error!(url = %url, job_id = %job_id, error = %e, "job failed");
                         }

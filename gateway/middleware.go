@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"log"
 	"strconv"
 	"sync"
@@ -64,6 +65,19 @@ func (s *rateLimiterStore) getBucket(key string) *tokenBucket {
 func RateLimiter() fiber.Handler {
 	store := newRateLimiterStore()
 
+	go func() {
+		for range time.Tick(60 * time.Second) {
+			store.mu.Lock()
+			cutoff := time.Now().Add(-5 * time.Minute)
+			for k, b := range store.buckets {
+				if b.lastRefill.Before(cutoff) {
+					delete(store.buckets, k)
+				}
+			}
+			store.mu.Unlock()
+		}
+	}()
+
 	return func(c *fiber.Ctx) error {
 		key := c.Get("X-API-Key")
 		if key == "" {
@@ -92,7 +106,9 @@ func RateLimiter() fiber.Handler {
 	}
 }
 
-func APIKeyAuth(validKeys map[string]bool) fiber.Handler {
+// APIKeyAuth validates the X-API-Key header against the provided keys
+// using constant-time comparison to prevent timing attacks.
+func APIKeyAuth(validKeys []string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		key := c.Get("X-API-Key")
 		if key == "" {
@@ -102,17 +118,28 @@ func APIKeyAuth(validKeys map[string]bool) fiber.Handler {
 			})
 		}
 
-		if !validKeys[key] {
+		valid := false
+		for _, vk := range validKeys {
+			if subtle.ConstantTimeCompare([]byte(key), []byte(vk)) == 1 {
+				valid = true
+				// Continue iterating to maintain constant time across all keys.
+			}
+		}
+
+		if !valid {
 			return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{
 				Success: false,
 				Error:   "invalid API key",
 			})
 		}
 
+		c.Locals("api_key", key)
 		return c.Next()
 	}
 }
 
+// RequestLogger logs each request with method, path, status, duration,
+// client IP, and a truncated API key for audit purposes.
 func RequestLogger() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		start := time.Now()
@@ -120,11 +147,26 @@ func RequestLogger() fiber.Handler {
 		err := c.Next()
 
 		duration := time.Since(start)
-		log.Printf("%s %s %d %s",
+
+		apiKey, _ := c.Locals("api_key").(string)
+		keyDisplay := "-"
+		if apiKey != "" && apiKey != "anonymous" {
+			if len(apiKey) > 8 {
+				keyDisplay = apiKey[:8] + "..."
+			} else {
+				keyDisplay = apiKey + "..."
+			}
+		} else if apiKey == "anonymous" {
+			keyDisplay = "anonymous"
+		}
+
+		log.Printf("%s %s %d %s ip=%s key=%s",
 			c.Method(),
 			c.Path(),
 			c.Response().StatusCode(),
 			duration,
+			c.IP(),
+			keyDisplay,
 		)
 
 		return err

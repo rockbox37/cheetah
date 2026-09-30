@@ -14,7 +14,7 @@ import (
 func testApp() *fiber.App {
 	cfg := Config{
 		RedisURL: "localhost:6379",
-		APIKeys:  map[string]bool{"test-key-123": true},
+		APIKeys:  []string{"test-key-123"},
 		Port:     "3000",
 	}
 	queue := NewQueueClient(cfg.RedisURL)
@@ -121,6 +121,24 @@ func TestScrapeValidatesBody(t *testing.T) {
 	}
 }
 
+func TestCrawlFormatValidation(t *testing.T) {
+	app := testApp()
+
+	body := bytes.NewBufferString(`{"url": "https://example.com", "format": "pdf"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/crawl", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "test-key-123")
+
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for invalid crawl format, got %d, body: %s", resp.StatusCode, string(respBody))
+	}
+}
+
 func TestRateLimiterHeadersPresent(t *testing.T) {
 	app := testApp()
 
@@ -192,5 +210,147 @@ func TestExtractRequiresSchema(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		respBody, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 400, got %d, body: %s", resp.StatusCode, string(respBody))
+	}
+}
+
+func TestCrawlMaxPagesCapped(t *testing.T) {
+	app := testApp()
+
+	body := bytes.NewBufferString(`{"url": "https://example.com", "max_pages": 50000}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/crawl", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "test-key-123")
+
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode == http.StatusBadRequest {
+		t.Fatal("max_pages=50000 should not be rejected; it should be capped silently")
+	}
+}
+
+func TestOwnerPersistsInJSON(t *testing.T) {
+	status := JobStatus{
+		JobID:  "test-123",
+		Status: "queued",
+		Owner:  "hash-abc",
+	}
+	data, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded JobStatus
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Owner != "hash-abc" {
+		t.Fatalf("expected owner to survive marshal/unmarshal, got %q", decoded.Owner)
+	}
+}
+
+func TestOwnerStrippedFromResponse(t *testing.T) {
+	status := JobStatus{
+		JobID:  "test-123",
+		Status: "queued",
+		Owner:  "hash-abc",
+	}
+	status.Owner = ""
+	data, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m["owner"]; ok {
+		t.Fatal("Owner should not appear after being zeroed (omitempty)")
+	}
+}
+
+func TestCallerOwnerHashes(t *testing.T) {
+	app := fiber.New()
+	app.Use(func(c *fiber.Ctx) error {
+		c.Locals("api_key", "test-key-123")
+		return c.Next()
+	})
+	app.Get("/", func(c *fiber.Ctx) error {
+		owner := callerOwner(c)
+		if owner == "test-key-123" {
+			return fiber.NewError(500, "owner should be hashed, not raw key")
+		}
+		if len(owner) != 64 {
+			return fiber.NewError(500, "expected 64-char hex SHA-256 hash")
+		}
+		return c.SendString(owner)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d, body: %s", resp.StatusCode, string(respBody))
+	}
+}
+
+func TestCallerOwnerAnonymous(t *testing.T) {
+	app := fiber.New()
+	app.Use(func(c *fiber.Ctx) error {
+		c.Locals("api_key", "anonymous")
+		return c.Next()
+	})
+	app.Get("/", func(c *fiber.Ctx) error {
+		owner := callerOwner(c)
+		if owner != "anonymous" {
+			return fiber.NewError(500, "expected anonymous, got "+owner)
+		}
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d, body: %s", resp.StatusCode, string(respBody))
+	}
+}
+
+func TestScrapeRejectsSSRF(t *testing.T) {
+	app := testApp()
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"loopback", "http://127.0.0.1/"},
+		{"private 10.x", "http://10.0.0.1/"},
+		{"metadata endpoint", "http://169.254.169.254/latest/meta-data/"},
+		{"ftp scheme", "ftp://example.com/file"},
+		{"file scheme", "file:///etc/passwd"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := bytes.NewBufferString(`{"url": "` + tt.url + `"}`)
+			req := httptest.NewRequest(http.MethodPost, "/v1/scrape", body)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-API-Key", "test-key-123")
+
+			resp, err := app.Test(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusBadRequest {
+				respBody, _ := io.ReadAll(resp.Body)
+				t.Fatalf("expected 400 for SSRF attempt %q, got %d, body: %s", tt.url, resp.StatusCode, string(respBody))
+			}
+		})
 	}
 }

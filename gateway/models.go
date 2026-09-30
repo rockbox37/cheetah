@@ -47,6 +47,7 @@ type CrawlResponse struct {
 type JobStatus struct {
 	JobID          string           `json:"job_id"`
 	Status         string           `json:"status"`
+	Owner          string           `json:"owner,omitempty"`
 	PagesTotal     int              `json:"pages_total"`
 	PagesCompleted int              `json:"pages_completed"`
 	Results        []ScrapeResponse `json:"results,omitempty"`

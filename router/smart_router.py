@@ -136,6 +136,9 @@ CHALLENGE_BODY_SIGNATURES = [
 
 
 def classify_url(url: str, headers: dict[str, str] | None = None) -> RouteDecision:
+    if headers:
+        headers = {k.lower(): v for k, v in headers.items()}
+
     try:
         parsed = urlparse(url)
     except Exception:
@@ -179,7 +182,7 @@ def classify_url(url: str, headers: dict[str, str] | None = None) -> RouteDecisi
             )
 
     if headers:
-        ct = headers.get("content-type", headers.get("Content-Type", ""))
+        ct = headers.get("content-type", "").lower()
         if ct and "text/html" not in ct and "application/xhtml" not in ct:
             return RouteDecision(
                 tier=Tier.FAST,
@@ -196,7 +199,9 @@ def classify_response(
     headers: dict[str, str],
     body_preview: str,
 ) -> RouteDecision:
-    ct = headers.get("content-type", headers.get("Content-Type", ""))
+    headers = {k.lower(): v for k, v in headers.items()}
+
+    ct = headers.get("content-type", "").lower()
     if ct and "text/html" not in ct and "application/xhtml" not in ct:
         return RouteDecision(
             tier=Tier.FAST,
@@ -204,9 +209,8 @@ def classify_response(
             confidence=0.95,
         )
 
-    headers_lower = {k.lower(): v.lower() for k, v in headers.items()}
     for challenge_hdr in CHALLENGE_HEADERS:
-        for hdr_key in headers_lower:
+        for hdr_key in headers:
             if hdr_key.startswith(challenge_hdr):
                 return RouteDecision(
                     tier=Tier.STEALTH,
@@ -214,8 +218,9 @@ def classify_response(
                     confidence=0.9,
                 )
 
+    body_lower = body_preview.lower()
+
     if status_code == 403 or status_code == 503:
-        body_lower = body_preview.lower()
         for sig in CHALLENGE_BODY_SIGNATURES:
             if sig in body_lower:
                 return RouteDecision(
@@ -223,8 +228,6 @@ def classify_response(
                     reason=f"challenge signature in {status_code} response: {sig}",
                     confidence=0.9,
                 )
-
-    body_lower = body_preview.lower()
 
     for sig in CHALLENGE_BODY_SIGNATURES:
         if sig in body_lower:

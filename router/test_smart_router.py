@@ -121,6 +121,42 @@ class TestClassifyUrlDefault:
         assert r.confidence >= 0.8
 
 
+class TestClassifyUrlCaseInsensitiveHeaders:
+    def test_uppercase_content_type(self):
+        r = classify_url(
+            "https://example.com/data.json",
+            headers={"CONTENT-TYPE": "application/json"},
+        )
+        assert r.tier == Tier.FAST
+        assert r.confidence >= 0.8
+        assert "non-HTML content-type" in r.reason
+
+    def test_mixed_case_content_type(self):
+        r = classify_url(
+            "https://example.com/feed.xml",
+            headers={"Content-Type": "application/xml"},
+        )
+        assert r.tier == Tier.FAST
+        assert r.confidence >= 0.8
+
+    def test_title_case_content_type(self):
+        r = classify_url(
+            "https://example.com/api",
+            headers={"Content-type": "application/json; charset=utf-8"},
+        )
+        assert r.tier == Tier.FAST
+        assert r.confidence >= 0.8
+
+    def test_html_content_type_any_case_not_fast(self):
+        r = classify_url(
+            "https://example.com/page",
+            headers={"CONTENT-TYPE": "text/html; charset=utf-8"},
+        )
+        # HTML content-type should NOT trigger the non-HTML early return
+        assert r.tier == Tier.FAST
+        assert r.reason == "default"
+
+
 class TestClassifyResponseNonHTML:
     def test_json_content_type(self):
         r = classify_response(
@@ -140,6 +176,69 @@ class TestClassifyResponseNonHTML:
             body_preview="<rss><channel></channel></rss>",
         )
         assert r.tier == Tier.FAST
+
+
+class TestClassifyResponseCaseInsensitiveHeaders:
+    def test_uppercase_content_type(self):
+        r = classify_response(
+            url="https://api.example.com/data",
+            status_code=200,
+            headers={"CONTENT-TYPE": "application/json"},
+            body_preview='{"key": "value"}',
+        )
+        assert r.tier == Tier.FAST
+        assert r.confidence >= 0.9
+        assert "non-HTML content-type" in r.reason
+
+    def test_mixed_case_content_type(self):
+        r = classify_response(
+            url="https://example.com/feed.xml",
+            status_code=200,
+            headers={"Content-Type": "application/xml"},
+            body_preview="<rss><channel></channel></rss>",
+        )
+        assert r.tier == Tier.FAST
+        assert r.confidence >= 0.9
+
+    def test_uppercase_challenge_header(self):
+        r = classify_response(
+            url="https://example.com",
+            status_code=403,
+            headers={
+                "CONTENT-TYPE": "text/html",
+                "CF-MITIGATED": "challenge",
+            },
+            body_preview="<html>blocked</html>",
+        )
+        assert r.tier == Tier.STEALTH
+        assert "challenge header" in r.reason
+
+    def test_mixed_case_datadome_header(self):
+        r = classify_response(
+            url="https://example.com",
+            status_code=200,
+            headers={
+                "Content-Type": "text/html",
+                "X-DataDome": "some-value",
+            },
+            body_preview="<html>page</html>",
+        )
+        assert r.tier == Tier.STEALTH
+
+    def test_html_content_type_uppercase_falls_through(self):
+        """HTML content-type in any case should not trigger non-HTML early return."""
+        paragraphs = "\n".join(
+            f"<p>Paragraph {i} with real content.</p>" for i in range(50)
+        )
+        body = f"<html><body>{paragraphs}</body></html>"
+        r = classify_response(
+            url="https://example.com/article",
+            status_code=200,
+            headers={"CONTENT-TYPE": "text/html; charset=utf-8"},
+            body_preview=body,
+        )
+        assert r.tier == Tier.FAST
+        assert r.reason == "large static HTML with content"
 
 
 class TestClassifyResponseChallenges:

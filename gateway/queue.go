@@ -4,19 +4,34 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
+
+const jobKeyPrefix = "job_results"
+const jobTTL = 1 * time.Hour
+const streamMaxLen int64 = 10000
+
+func jobKey(jobID string) string {
+	return fmt.Sprintf("%s:%s", jobKeyPrefix, jobID)
+}
+
+func ownerKey(jobID string) string {
+	return fmt.Sprintf("job_owner:%s", jobID)
+}
 
 type QueueClient struct {
 	rdb *redis.Client
 }
 
 func NewQueueClient(addr string) *QueueClient {
-	rdb := redis.NewClient(&redis.Options{
-		Addr: addr,
-	})
+	opts, err := redis.ParseURL(addr)
+	if err != nil {
+		opts = &redis.Options{Addr: addr}
+	}
+	rdb := redis.NewClient(opts)
 	return &QueueClient{rdb: rdb}
 }
 
@@ -28,7 +43,7 @@ func (q *QueueClient) Close() error {
 	return q.rdb.Close()
 }
 
-func (q *QueueClient) EnqueueScrape(ctx context.Context, req ScrapeRequest) (string, error) {
+func (q *QueueClient) EnqueueScrape(ctx context.Context, req ScrapeRequest, owner string) (string, error) {
 	jobID := uuid.New().String()
 
 	payload, err := json.Marshal(req)
@@ -38,6 +53,8 @@ func (q *QueueClient) EnqueueScrape(ctx context.Context, req ScrapeRequest) (str
 
 	err = q.rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "scrape_jobs",
+		MaxLen: streamMaxLen,
+		Approx: true,
 		Values: map[string]interface{}{
 			"job_id":  jobID,
 			"url":     req.URL,
@@ -49,18 +66,20 @@ func (q *QueueClient) EnqueueScrape(ctx context.Context, req ScrapeRequest) (str
 		return "", fmt.Errorf("enqueue scrape job: %w", err)
 	}
 
-	err = q.rdb.HSet(ctx, "job_results", jobID, mustMarshal(JobStatus{
+	pipe := q.rdb.Pipeline()
+	pipe.Set(ctx, jobKey(jobID), mustMarshal(JobStatus{
 		JobID:  jobID,
 		Status: "queued",
-	})).Err()
-	if err != nil {
+	}), jobTTL)
+	pipe.Set(ctx, ownerKey(jobID), owner, jobTTL)
+	if _, err = pipe.Exec(ctx); err != nil {
 		return "", fmt.Errorf("set initial job status: %w", err)
 	}
 
 	return jobID, nil
 }
 
-func (q *QueueClient) EnqueueCrawl(ctx context.Context, req CrawlRequest) (string, error) {
+func (q *QueueClient) EnqueueCrawl(ctx context.Context, req CrawlRequest, owner string) (string, error) {
 	jobID := uuid.New().String()
 
 	payload, err := json.Marshal(req)
@@ -70,6 +89,8 @@ func (q *QueueClient) EnqueueCrawl(ctx context.Context, req CrawlRequest) (strin
 
 	err = q.rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "crawl_jobs",
+		MaxLen: streamMaxLen,
+		Approx: true,
 		Values: map[string]interface{}{
 			"job_id":  jobID,
 			"url":     req.URL,
@@ -80,11 +101,13 @@ func (q *QueueClient) EnqueueCrawl(ctx context.Context, req CrawlRequest) (strin
 		return "", fmt.Errorf("enqueue crawl job: %w", err)
 	}
 
-	err = q.rdb.HSet(ctx, "job_results", jobID, mustMarshal(JobStatus{
+	pipe := q.rdb.Pipeline()
+	pipe.Set(ctx, jobKey(jobID), mustMarshal(JobStatus{
 		JobID:  jobID,
 		Status: "queued",
-	})).Err()
-	if err != nil {
+	}), jobTTL)
+	pipe.Set(ctx, ownerKey(jobID), owner, jobTTL)
+	if _, err = pipe.Exec(ctx); err != nil {
 		return "", fmt.Errorf("set initial job status: %w", err)
 	}
 
@@ -92,7 +115,7 @@ func (q *QueueClient) EnqueueCrawl(ctx context.Context, req CrawlRequest) (strin
 }
 
 func (q *QueueClient) GetJobStatus(ctx context.Context, jobID string) (JobStatus, error) {
-	val, err := q.rdb.HGet(ctx, "job_results", jobID).Result()
+	val, err := q.rdb.Get(ctx, jobKey(jobID)).Result()
 	if err == redis.Nil {
 		return JobStatus{}, fmt.Errorf("job not found: %s", jobID)
 	}
@@ -103,6 +126,11 @@ func (q *QueueClient) GetJobStatus(ctx context.Context, jobID string) (JobStatus
 	var status JobStatus
 	if err := json.Unmarshal([]byte(val), &status); err != nil {
 		return JobStatus{}, fmt.Errorf("unmarshal job status: %w", err)
+	}
+
+	owner, err := q.rdb.Get(ctx, ownerKey(jobID)).Result()
+	if err == nil {
+		status.Owner = owner
 	}
 
 	return status, nil

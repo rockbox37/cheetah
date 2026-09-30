@@ -1,9 +1,11 @@
 package main
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"log"
-	"net/url"
 	"os"
 	"strings"
 
@@ -12,7 +14,7 @@ import (
 
 type Config struct {
 	RedisURL string
-	APIKeys  map[string]bool
+	APIKeys  []string
 	Port     string
 }
 
@@ -27,13 +29,13 @@ func LoadConfig() Config {
 		port = "3000"
 	}
 
-	apiKeys := make(map[string]bool)
+	var apiKeys []string
 	keysEnv := os.Getenv("CHEETAH_API_KEYS")
 	if keysEnv != "" {
 		for _, key := range strings.Split(keysEnv, ",") {
 			k := strings.TrimSpace(key)
 			if k != "" {
-				apiKeys[k] = true
+				apiKeys = append(apiKeys, k)
 			}
 		}
 	}
@@ -67,6 +69,13 @@ func NewApp(cfg Config, queue *QueueClient) *fiber.App {
 	v1 := app.Group("/v1")
 	if len(cfg.APIKeys) > 0 {
 		v1.Use(APIKeyAuth(cfg.APIKeys))
+	} else {
+		// When auth is disabled, tag every request as anonymous
+		// so the IDOR owner check still works.
+		v1.Use(func(c *fiber.Ctx) error {
+			c.Locals("api_key", "anonymous")
+			return c.Next()
+		})
 	}
 	v1.Use(RateLimiter())
 
@@ -106,6 +115,20 @@ func handleHealth(queue *QueueClient) fiber.Handler {
 	}
 }
 
+func callerOwner(c *fiber.Ctx) string {
+	key, _ := c.Locals("api_key").(string)
+	if key == "" || key == "anonymous" {
+		return "anonymous"
+	}
+	h := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(h[:])
+}
+
+// validateFormat checks that format is one of the accepted values.
+func validateFormat(format string) bool {
+	return format == "markdown" || format == "html" || format == "text"
+}
+
 func handleScrape(queue *QueueClient) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		var req ScrapeRequest
@@ -123,24 +146,25 @@ func handleScrape(queue *QueueClient) fiber.Handler {
 			})
 		}
 
-		if _, err := url.ParseRequestURI(req.URL); err != nil {
+		if err := ValidateScrapeURL(req.URL); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
 				Success: false,
-				Error:   "invalid url",
+				Error:   err.Error(),
 			})
 		}
 
 		if req.Format == "" {
 			req.Format = "markdown"
 		}
-		if req.Format != "markdown" && req.Format != "html" && req.Format != "text" {
+		if !validateFormat(req.Format) {
 			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
 				Success: false,
 				Error:   "format must be markdown, html, or text",
 			})
 		}
 
-		jobID, err := queue.EnqueueScrape(c.Context(), req)
+		owner := callerOwner(c)
+		jobID, err := queue.EnqueueScrape(c.Context(), req, owner)
 		if err != nil {
 			log.Printf("enqueue scrape error: %v", err)
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
@@ -173,22 +197,32 @@ func handleCrawl(queue *QueueClient) fiber.Handler {
 			})
 		}
 
-		if _, err := url.ParseRequestURI(req.URL); err != nil {
+		if err := ValidateScrapeURL(req.URL); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
 				Success: false,
-				Error:   "invalid url",
+				Error:   err.Error(),
 			})
 		}
 
 		if req.MaxPages <= 0 {
 			req.MaxPages = 10
 		}
+		if req.MaxPages > 1000 {
+			req.MaxPages = 1000
+		}
 
 		if req.Format == "" {
 			req.Format = "markdown"
 		}
+		if !validateFormat(req.Format) {
+			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
+				Success: false,
+				Error:   "format must be markdown, html, or text",
+			})
+		}
 
-		jobID, err := queue.EnqueueCrawl(c.Context(), req)
+		owner := callerOwner(c)
+		jobID, err := queue.EnqueueCrawl(c.Context(), req, owner)
 		if err != nil {
 			log.Printf("enqueue crawl error: %v", err)
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
@@ -222,10 +256,10 @@ func handleExtract(queue *QueueClient) fiber.Handler {
 			})
 		}
 
-		if _, err := url.ParseRequestURI(req.URL); err != nil {
+		if err := ValidateScrapeURL(req.URL); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
 				Success: false,
-				Error:   "invalid url",
+				Error:   err.Error(),
 			})
 		}
 
@@ -253,7 +287,8 @@ func handleExtract(queue *QueueClient) fiber.Handler {
 			Wait:          req.Wait,
 		}
 
-		jobID, err := queue.EnqueueScrape(c.Context(), scrapeReq)
+		owner := callerOwner(c)
+		jobID, err := queue.EnqueueScrape(c.Context(), scrapeReq, owner)
 		if err != nil {
 			log.Printf("enqueue extract error: %v", err)
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
@@ -294,6 +329,16 @@ func handleCrawlStatus(queue *QueueClient) fiber.Handler {
 			})
 		}
 
+		// IDOR check: verify the caller owns this job.
+		caller := callerOwner(c)
+		if subtle.ConstantTimeCompare([]byte(status.Owner), []byte(caller)) != 1 {
+			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
+				Success: false,
+				Error:   "job not found",
+			})
+		}
+
+		status.Owner = ""
 		return c.JSON(status)
 	}
 }

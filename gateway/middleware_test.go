@@ -47,7 +47,7 @@ func TestRateLimiterExhaustion(t *testing.T) {
 }
 
 func TestAPIKeyAuthRejectsEmpty(t *testing.T) {
-	keys := map[string]bool{"valid-key": true}
+	keys := []string{"valid-key"}
 	app := fiber.New()
 	app.Use(APIKeyAuth(keys))
 	app.Get("/", func(c *fiber.Ctx) error {
@@ -65,7 +65,7 @@ func TestAPIKeyAuthRejectsEmpty(t *testing.T) {
 }
 
 func TestAPIKeyAuthAcceptsValid(t *testing.T) {
-	keys := map[string]bool{"valid-key": true}
+	keys := []string{"valid-key"}
 	app := fiber.New()
 	app.Use(APIKeyAuth(keys))
 	app.Get("/", func(c *fiber.Ctx) error {
@@ -74,6 +74,48 @@ func TestAPIKeyAuthAcceptsValid(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Header.Set("X-API-Key", "valid-key")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestAPIKeyAuthRejectsInvalid(t *testing.T) {
+	keys := []string{"valid-key"}
+	app := fiber.New()
+	app.Use(APIKeyAuth(keys))
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-API-Key", "wrong-key")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 401 {
+		t.Fatalf("expected 401 for invalid key, got %d", resp.StatusCode)
+	}
+}
+
+func TestAPIKeyAuthSetsLocal(t *testing.T) {
+	keys := []string{"my-api-key-12345"}
+	app := fiber.New()
+	app.Use(APIKeyAuth(keys))
+	app.Get("/", func(c *fiber.Ctx) error {
+		apiKey, _ := c.Locals("api_key").(string)
+		if apiKey != "my-api-key-12345" {
+			return fiber.NewError(500, "api_key local not set correctly")
+		}
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-API-Key", "my-api-key-12345")
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatal(err)

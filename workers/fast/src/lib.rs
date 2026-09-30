@@ -1,9 +1,12 @@
 use chrono::{DateTime, Utc};
+use futures_util::StreamExt;
 use reqwest::Client;
 use scraper::{ElementRef, Html, Node, Selector};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as FmtWrite;
+use std::net::IpAddr;
 use std::time::Duration;
+use tokio::net::lookup_host;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -11,8 +14,54 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error("Response body exceeds max size of {max_bytes} bytes")]
     BodyTooLarge { max_bytes: usize },
-    #[error("Non-success status code: {0}")]
-    BadStatus(u16),
+    #[error("URL resolves to a private/reserved IP address")]
+    SsrfBlocked,
+}
+
+fn is_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || (v4.octets()[0] == 169 && v4.octets()[1] == 254)
+        }
+        IpAddr::V6(v6) => {
+            if v6.is_loopback() || v6.is_unspecified() {
+                return true;
+            }
+            let seg0 = v6.segments()[0];
+            if (seg0 & 0xffc0) == 0xfe80 {
+                return true;
+            }
+            if (seg0 & 0xfe00) == 0xfc00 {
+                return true;
+            }
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_unspecified()
+                    || (v4.octets()[0] == 169 && v4.octets()[1] == 254);
+            }
+            false
+        }
+    }
+}
+
+async fn validate_url_ip(url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| Error::SsrfBlocked)?;
+    let host = parsed.host_str().ok_or(Error::SsrfBlocked)?;
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let addr = format!("{}:{}", host, port);
+    let resolved = lookup_host(&addr).await.map_err(|_| Error::SsrfBlocked)?;
+    for sock in resolved {
+        if is_private_ip(sock.ip()) {
+            return Err(Error::SsrfBlocked);
+        }
+    }
+    Ok(())
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -58,6 +107,8 @@ impl Default for FetchConfig {
 }
 
 pub async fn fetch_page(client: &Client, url: &str, config: &FetchConfig) -> Result<PageResult> {
+    validate_url_ip(url).await?;
+
     let resp = client
         .get(url)
         .header("User-Agent", &config.user_agent)
@@ -66,17 +117,47 @@ pub async fn fetch_page(client: &Client, url: &str, config: &FetchConfig) -> Res
         .await?;
 
     let status_code = resp.status().as_u16();
-    let raw_html = resp.text().await?;
 
-    if raw_html.len() > config.max_body_size {
-        return Err(Error::BodyTooLarge {
-            max_bytes: config.max_body_size,
-        });
+    // P0 fix: Check Content-Length header before downloading the body.
+    let content_length = resp
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok());
+
+    if let Some(len) = content_length {
+        if len > config.max_body_size {
+            return Err(Error::BodyTooLarge {
+                max_bytes: config.max_body_size,
+            });
+        }
     }
 
+    // P0 fix: Stream the body with a running byte counter instead of
+    // buffering the entire response before checking the size.
+    let capacity = content_length.unwrap_or(0).min(config.max_body_size);
+    let mut body = Vec::with_capacity(capacity);
+    let mut stream = resp.bytes_stream();
+    let mut total: usize = 0;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        total += chunk.len();
+        if total > config.max_body_size {
+            return Err(Error::BodyTooLarge {
+                max_bytes: config.max_body_size,
+            });
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    let raw_html = String::from_utf8_lossy(&body).into_owned();
+
+    // P2 fix: Parse the HTML once and pass the parsed document to both
+    // extract_metadata and html_to_markdown.
     let document = Html::parse_document(&raw_html);
     let metadata = extract_metadata(&document);
-    let markdown = html_to_markdown(&raw_html);
+    let markdown = html_to_markdown(&document);
 
     Ok(PageResult {
         url: url.to_string(),
@@ -147,14 +228,17 @@ fn meta_property(document: &Html, property: &str) -> Option<String> {
 
 const STRIP_TAGS: &[&str] = &["script", "style", "nav", "footer", "aside", "noscript", "svg"];
 
-pub fn html_to_markdown(html: &str) -> String {
-    let document = Html::parse_document(html);
+/// Convert a parsed HTML document to markdown.
+///
+/// Accepts `&Html` so the caller can reuse an already-parsed document
+/// (avoids a redundant parse when metadata extraction already parsed it).
+pub fn html_to_markdown(document: &Html) -> String {
     let body = match document.select(&sel("body")).next() {
         Some(el) => el,
         None => return String::new(),
     };
 
-    let mut out = String::with_capacity(html.len() / 2);
+    let mut out = String::new();
     let mut state = ConvertState::default();
     convert_children(&body, &mut out, &mut state);
     collapse_blank_lines(&out)
@@ -164,7 +248,6 @@ pub fn html_to_markdown(html: &str) -> String {
 struct ConvertState {
     list_depth: usize,
     ordered: bool,
-    item_counter: usize,
     pre_block: bool,
 }
 
@@ -248,27 +331,21 @@ fn convert_children(element: &ElementRef, out: &mut String, state: &mut ConvertS
                         ensure_blank_line(out);
                         let saved_depth = state.list_depth;
                         let saved_ordered = state.ordered;
-                        let saved_counter = state.item_counter;
                         state.list_depth += 1;
                         state.ordered = false;
-                        state.item_counter = 0;
                         convert_children(&child_ref, out, state);
                         state.list_depth = saved_depth;
                         state.ordered = saved_ordered;
-                        state.item_counter = saved_counter;
                     }
                     "ol" => {
                         ensure_blank_line(out);
                         let saved_depth = state.list_depth;
                         let saved_ordered = state.ordered;
-                        let saved_counter = state.item_counter;
                         state.list_depth += 1;
                         state.ordered = true;
-                        state.item_counter = 0;
                         convert_children(&child_ref, out, state);
                         state.list_depth = saved_depth;
                         state.ordered = saved_ordered;
-                        state.item_counter = saved_counter;
                     }
                     "li" => {
                         li_counter += 1;
@@ -368,10 +445,35 @@ fn collapse_blank_lines(s: &str) -> String {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn ssrf_blocks_loopback() {
+        let result = validate_url_ip("http://127.0.0.1/").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn ssrf_blocks_private_10() {
+        let result = validate_url_ip("http://10.0.0.1/").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn ssrf_blocks_metadata() {
+        let result = validate_url_ip("http://169.254.169.254/").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn ssrf_allows_public() {
+        let result = validate_url_ip("https://example.com/").await;
+        assert!(result.is_ok());
+    }
+
     #[test]
     fn headings() {
         let html = "<html><body><h1>Title</h1><h2>Subtitle</h2><h3>Section</h3></body></html>";
-        let md = html_to_markdown(html);
+        let doc = Html::parse_document(html);
+        let md = html_to_markdown(&doc);
         assert!(md.contains("# Title"));
         assert!(md.contains("## Subtitle"));
         assert!(md.contains("### Section"));
@@ -380,7 +482,8 @@ mod tests {
     #[test]
     fn paragraphs() {
         let html = "<html><body><p>First paragraph.</p><p>Second paragraph.</p></body></html>";
-        let md = html_to_markdown(html);
+        let doc = Html::parse_document(html);
+        let md = html_to_markdown(&doc);
         assert!(md.contains("First paragraph."));
         assert!(md.contains("Second paragraph."));
         let parts: Vec<&str> = md.split("First paragraph.").collect();
@@ -390,21 +493,24 @@ mod tests {
     #[test]
     fn links() {
         let html = r#"<html><body><p>Visit <a href="https://example.com">Example</a> now.</p></body></html>"#;
-        let md = html_to_markdown(html);
+        let doc = Html::parse_document(html);
+        let md = html_to_markdown(&doc);
         assert!(md.contains("[Example](https://example.com)"));
     }
 
     #[test]
     fn images() {
         let html = r#"<html><body><img src="photo.jpg" alt="A photo"></body></html>"#;
-        let md = html_to_markdown(html);
+        let doc = Html::parse_document(html);
+        let md = html_to_markdown(&doc);
         assert!(md.contains("![A photo](photo.jpg)"));
     }
 
     #[test]
     fn bold_italic() {
         let html = "<html><body><p><strong>bold</strong> and <em>italic</em></p></body></html>";
-        let md = html_to_markdown(html);
+        let doc = Html::parse_document(html);
+        let md = html_to_markdown(&doc);
         assert!(md.contains("**bold**"));
         assert!(md.contains("*italic*"));
     }
@@ -412,14 +518,16 @@ mod tests {
     #[test]
     fn inline_code() {
         let html = "<html><body><p>Run <code>cargo build</code> now.</p></body></html>";
-        let md = html_to_markdown(html);
+        let doc = Html::parse_document(html);
+        let md = html_to_markdown(&doc);
         assert!(md.contains("`cargo build`"));
     }
 
     #[test]
     fn code_blocks() {
         let html = "<html><body><pre><code>fn main() {\n    println!(\"hi\");\n}</code></pre></body></html>";
-        let md = html_to_markdown(html);
+        let doc = Html::parse_document(html);
+        let md = html_to_markdown(&doc);
         assert!(md.contains("```"));
         assert!(md.contains("fn main()"));
     }
@@ -427,7 +535,8 @@ mod tests {
     #[test]
     fn unordered_list() {
         let html = "<html><body><ul><li>Alpha</li><li>Beta</li><li>Gamma</li></ul></body></html>";
-        let md = html_to_markdown(html);
+        let doc = Html::parse_document(html);
+        let md = html_to_markdown(&doc);
         assert!(md.contains("- Alpha"));
         assert!(md.contains("- Beta"));
         assert!(md.contains("- Gamma"));
@@ -436,7 +545,8 @@ mod tests {
     #[test]
     fn ordered_list() {
         let html = "<html><body><ol><li>First</li><li>Second</li><li>Third</li></ol></body></html>";
-        let md = html_to_markdown(html);
+        let doc = Html::parse_document(html);
+        let md = html_to_markdown(&doc);
         assert!(md.contains("1. First"), "got: {md}");
         assert!(md.contains("2. Second"), "got: {md}");
         assert!(md.contains("3. Third"), "got: {md}");
@@ -450,7 +560,8 @@ mod tests {
             <p>Visible content</p>
             <nav><a href="/">Home</a></nav>
         </body></html>"#;
-        let md = html_to_markdown(html);
+        let doc = Html::parse_document(html);
+        let md = html_to_markdown(&doc);
         assert!(md.contains("Visible content"));
         assert!(!md.contains("alert"));
         assert!(!md.contains(".red"));
@@ -464,7 +575,8 @@ mod tests {
             <footer>Copyright 2026</footer>
             <aside>Sidebar stuff</aside>
         </body></html>"#;
-        let md = html_to_markdown(html);
+        let doc = Html::parse_document(html);
+        let md = html_to_markdown(&doc);
         assert!(md.contains("Main content"));
         assert!(!md.contains("Copyright"));
         assert!(!md.contains("Sidebar"));
@@ -516,14 +628,16 @@ mod tests {
     #[test]
     fn blockquote() {
         let html = "<html><body><blockquote>Quoted text here</blockquote></body></html>";
-        let md = html_to_markdown(html);
+        let doc = Html::parse_document(html);
+        let md = html_to_markdown(&doc);
         assert!(md.contains("> Quoted text here"));
     }
 
     #[test]
     fn whitespace_collapse() {
         let html = "<html><body><p>  lots   of    spaces  </p></body></html>";
-        let md = html_to_markdown(html);
+        let doc = Html::parse_document(html);
+        let md = html_to_markdown(&doc);
         assert!(!md.contains("  lots"));
         assert!(md.contains("lots of spaces"));
     }
@@ -548,7 +662,8 @@ mod tests {
             <script>tracking();</script>
         </body>
         </html>"#;
-        let md = html_to_markdown(html);
+        let doc = Html::parse_document(html);
+        let md = html_to_markdown(&doc);
         assert!(md.contains("# My Blog Post"));
         assert!(md.contains("**first**"));
         assert!(md.contains("[link](/link)"));

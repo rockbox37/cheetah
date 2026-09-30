@@ -31,3 +31,17 @@ func TestNewQueueClient(t *testing.T) {
 	}
 	defer q.Close()
 }
+
+func TestJobKey(t *testing.T) {
+	got := jobKey("abc-123")
+	if got != "job_results:abc-123" {
+		t.Fatalf("expected job_results:abc-123, got %s", got)
+	}
+}
+
+func TestOwnerKey(t *testing.T) {
+	got := ownerKey("abc-123")
+	if got != "job_owner:abc-123" {
+		t.Fatalf("expected job_owner:abc-123, got %s", got)
+	}
+}

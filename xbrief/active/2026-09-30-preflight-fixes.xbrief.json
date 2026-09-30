@@ -1,0 +1,128 @@
+{
+  "xBRIEFInfo": {
+    "version": "0.8",
+    "description": "Fix P0-P2 preflight findings: Redis key mismatch, rate limiter eviction, SSRF hardening, API key leak, MaxPages cap, stream trimming, dead code removal",
+    "created": "2026-09-30T22:00:00Z",
+    "updated": "2026-09-30T21:20:44Z"
+  },
+  "plan": {
+    "title": "Preflight P0-P2 Fixes (Iteration 2)",
+    "status": "running",
+    "items": [
+      {
+        "id": "fix-redis-mismatch",
+        "title": "Fix gateway-worker Redis key protocol mismatch",
+        "type": "task",
+        "status": "pending"
+      },
+      {
+        "id": "fix-rate-limiter",
+        "title": "Add rate limiter bucket eviction",
+        "type": "task",
+        "status": "pending"
+      },
+      {
+        "id": "fix-ssrf-redirect",
+        "title": "Disable redirect following in Rust worker",
+        "type": "task",
+        "status": "pending"
+      },
+      {
+        "id": "fix-api-key-leak",
+        "title": "Hash API key for owner field, hide from JSON response",
+        "type": "task",
+        "status": "pending"
+      },
+      {
+        "id": "fix-maxpages-cap",
+        "title": "Cap CrawlRequest.MaxPages",
+        "type": "task",
+        "status": "pending"
+      },
+      {
+        "id": "fix-stream-trim",
+        "title": "Add MAXLEN to Redis stream XADD",
+        "type": "task",
+        "status": "pending"
+      },
+      {
+        "id": "fix-python-headers",
+        "title": "Remove pointless headers_lower_vals dict",
+        "type": "task",
+        "status": "pending"
+      },
+      {
+        "id": "fix-dead-item-counter",
+        "title": "Remove dead item_counter from ConvertState",
+        "type": "task",
+        "status": "pending"
+      }
+    ],
+    "acceptance": {
+      "commands": [],
+      "none_stated": true,
+      "source_rung": "derived",
+      "derived_reason": "derived 8 independently testable clauses from the task statement before product edit (#3323)",
+      "clauses": [
+        {
+          "id": 1,
+          "text": "Fix gateway-worker Redis key protocol mismatch",
+          "artifact_path": null,
+          "ambiguous": false,
+          "provenance": "statement"
+        },
+        {
+          "id": 2,
+          "text": "Add rate limiter bucket eviction",
+          "artifact_path": null,
+          "ambiguous": false,
+          "provenance": "statement"
+        },
+        {
+          "id": 3,
+          "text": "Disable redirect following in Rust worker",
+          "artifact_path": null,
+          "ambiguous": false,
+          "provenance": "statement"
+        },
+        {
+          "id": 4,
+          "text": "Hash API key for owner field, hide from JSON response",
+          "artifact_path": null,
+          "ambiguous": false,
+          "provenance": "statement"
+        },
+        {
+          "id": 5,
+          "text": "Cap CrawlRequest.MaxPages",
+          "artifact_path": null,
+          "ambiguous": false,
+          "provenance": "statement"
+        },
+        {
+          "id": 6,
+          "text": "Add MAXLEN to Redis stream XADD",
+          "artifact_path": null,
+          "ambiguous": false,
+          "provenance": "statement"
+        },
+        {
+          "id": 7,
+          "text": "Remove pointless headers_lower_vals dict",
+          "artifact_path": null,
+          "ambiguous": false,
+          "provenance": "statement"
+        },
+        {
+          "id": 8,
+          "text": "Remove dead item_counter from ConvertState",
+          "artifact_path": null,
+          "ambiguous": false,
+          "provenance": "statement"
+        }
+      ],
+      "ambiguity_attestation": "none_found"
+    },
+    "updated": "2026-09-30T21:20:44Z"
+  }
+}
