@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "deposit_sha": "0290c9003ff4",
+  "updated_at": "2026-09-30T21:19:08Z",
+  "agents_refresh": {
+    "ok": true,
+    "ts": "2026-09-30T21:19:08Z",
+    "exit_code": 0,
+    "message": "agents:refresh: unchanged - sha match"
+  },
+  "cache_fresh": {
+    "ok": false,
+    "ts": "2026-09-30T21:19:08Z",
+    "exit_code": 2,
+    "message": "[deft cache-fresh] triage cache not populated (consumer deposit) — not a toolchain failure. Recovery: run `deft triage:bootstrap` if you need the queue."
+  },
+  "doctor": {
+    "ok": true,
+    "ts": "2026-09-30T21:19:08Z",
+    "exit_code": 0,
+    "message": "[doctor] ran 1h ago, 1 warning (advisory; throttle-skipped); next eligible in 22h; --full forces."
+  },
+  "preflight": {
+    "ok": true,
+    "ts": "2026-09-30T21:19:08Z",
+    "exit_code": 0,
+    "message": "[deft preflight] toolchain status: ok"
+  }
+}
