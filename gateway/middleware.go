@@ -65,8 +65,10 @@ func (s *rateLimiterStore) getBucket(key string) *tokenBucket {
 func RateLimiter() fiber.Handler {
 	store := newRateLimiterStore()
 
+	ticker := time.NewTicker(60 * time.Second)
 	go func() {
-		for range time.Tick(60 * time.Second) {
+		defer ticker.Stop()
+		for range ticker.C {
 			store.mu.Lock()
 			cutoff := time.Now().Add(-5 * time.Minute)
 			for k, b := range store.buckets {

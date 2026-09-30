@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
+
+var ErrJobNotFound = errors.New("job not found")
 
 const jobKeyPrefix = "job_results"
 const jobTTL = 1 * time.Hour
@@ -117,7 +120,7 @@ func (q *QueueClient) EnqueueCrawl(ctx context.Context, req CrawlRequest, owner 
 func (q *QueueClient) GetJobStatus(ctx context.Context, jobID string) (JobStatus, error) {
 	val, err := q.rdb.Get(ctx, jobKey(jobID)).Result()
 	if err == redis.Nil {
-		return JobStatus{}, fmt.Errorf("job not found: %s", jobID)
+		return JobStatus{}, fmt.Errorf("job %s: %w", jobID, ErrJobNotFound)
 	}
 	if err != nil {
 		return JobStatus{}, fmt.Errorf("get job status: %w", err)

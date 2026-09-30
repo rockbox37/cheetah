@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 )
@@ -11,6 +12,7 @@ import (
 func ValidateScrapeURL(rawURL string) error {
 	u, err := url.ParseRequestURI(rawURL)
 	if err != nil {
+		log.Printf("url validation failed: %v", err)
 		return fmt.Errorf("invalid url")
 	}
 

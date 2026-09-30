@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"strings"
@@ -316,7 +317,7 @@ func handleCrawlStatus(queue *QueueClient) fiber.Handler {
 
 		status, err := queue.GetJobStatus(c.Context(), jobID)
 		if err != nil {
-			if strings.Contains(err.Error(), "job not found") {
+			if errors.Is(err, ErrJobNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
 					Success: false,
 					Error:   "job not found",
