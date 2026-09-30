@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+# Reject AI-assistant co-author trailers in commit messages.
+#
+# Why: GitHub parses `Co-authored-by:` and credits the named identity, so these
+# trailers are how an AI tool ends up in a repo's contributor list. Blocking them
+# here catches every source — Claude Code, Cursor, Copilot, anything future —
+# regardless of how each tool happens to be configured, which a per-tool setting
+# does not.
+#
+# Installed via core.hooksPath — globally at ~/.githooks-global, or per-repo as
+# here.
+# NOTE: a repo that sets its own core.hooksPath overrides this and needs its own
+# copy in that directory. Track that copy — an ignored file is not materialised
+# into a `git worktree add` checkout, so the guard would be missing from exactly
+# the checkout doing the work.
+#
+# Emergency bypass: AISIG_ALLOW=1 git commit ...
+
+set -euo pipefail
+
+MSG_FILE="${1:?commit-msg hook requires the message file path}"
+
+# Reject anything that is not a real readable file up front, for a clear
+# diagnostic. Defence in depth, NOT a hole being closed: grep exits 2 on a
+# directory and scan()'s rc>1 guard already fails closed there. Kept so the
+# failure names itself, and so the guarantee survives a future scan rewrite.
+{ [ -f "$MSG_FILE" ] && [ -r "$MSG_FILE" ]; } || {
+  echo "✗ commit-msg: cannot read $MSG_FILE; refusing to commit unchecked." >&2
+  exit 1
+}
+
+# Names that identify an AI assistant rather than a person. Matched anywhere in
+# the trailer line — including the email — because the tool's display name is
+# not reliably the giveaway: GitHub Copilot signs as "GitHub Copilot" and
+# "github-copilot[bot]", neither of which starts with a listed token.
+#
+# Known and accepted cost: this also rejects a HUMAN co-author at an AI company,
+# e.g. `Jane Doe <jane@openai.com>`. That is the deliberate trade — a missed bot
+# credits an AI in the contributor list permanently, while a blocked human is
+# one AISIG_ALLOW=1 away. Do not narrow this to display names to "fix" that;
+# doing so is what let "GitHub Copilot" through in the first place.
+#
+# `\b` word boundaries rather than a bare substring: without them `amp` in the
+# list below matches "example" and would reject every @example.com co-author.
+# `\b` is chosen over BSD's `[[:<:]]` because GNU grep supports it too.
+# `google-labs-jules` not bare `jules`, and `sweep-ai` not bare `sweep`: both
+# are human names, and the real bots always carry the longer token. The same
+# reasoning keeps `cody` and `augment` out. Every token below was verified to
+# appear in a trailer git actually credits.
+AI='claude|anthropic|cursor|copilot|codex|devin|aider|windsurf|sourcegraph|amp|openai|gemini|bard|google-labs-jules|openhands|all-hands|tabnine|sweep-ai'
+
+# The trailer key, tolerating the whitespace git itself tolerates. git's trailer
+# parser accepts space/tab BEFORE the colon, so `Co-authored-by : Claude <...>`
+# is a trailer GitHub will credit; requiring a tight `by:` let it through.
+#
+# `[[:space:]]*` at the front means an INDENTED line matches too. That is
+# deliberate and costs something: a quoted example in a message body is
+# rejected. git's own parser ignores an indented trailer, but GitHub's
+# crediting parser is not git's and is not specified, so we do not stake a
+# permanent, unremovable credit on that difference.
+# Spelled ONCE. The key+token pattern used to be re-typed at each of the three
+# scan sites, and that is precisely how the post-delegate re-check ended up
+# running a different (weaker) test than the main path. Derive, never re-type.
+KEY_CORE='co-authored-by[[:space:]]*:'
+KEY="^[[:space:]]*$KEY_CORE"
+
+# Scan, distinguishing "no match" (grep exit 1) from "could not scan" (exit >1).
+# `if grep ...; then` collapses the two, and `set -e` is suspended inside an
+# `if` condition — so an unreadable file or a grep lacking `\b` would fail OPEN
+# and accept the commit unscanned. A guard must fail closed.
+# `-a` so a message carrying a NUL byte is still scanned as text.
+#
+# Contract: returns 0 = matched, 1 = no match; exits 1 outright if the scan
+# itself could not run. Sets the GLOBAL `SCAN_OUT` to the matching lines —
+# every call clobbers it, so copy it out before the next call.
+scan() {
+  local pattern=$1 file=$2 rc
+  set +e
+  # LC_ALL=C and GREP_OPTIONS= are load-bearing, not hygiene. Under a UTF-8
+  # locale BSD grep does not match a line holding an invalid multibyte sequence
+  # and returns 1 (NO MATCH, not an error) — so one Latin-1 byte in a display
+  # name hides the trailer and the rc>1 guard below never fires. BSD grep also
+  # still honours GREP_OPTIONS, so `GREP_OPTIONS=-x` in any env reaching git
+  # disables this guard silently. Both fail OPEN; both are one token to fix.
+  # Removing either is caught by commit-msg.test.sh — it has already caught it.
+  SCAN_OUT=$(LC_ALL=C GREP_OPTIONS= grep -inaE "$pattern" "$file")
+  rc=$?
+  set -e
+  if [ "$rc" -gt 1 ]; then
+    echo "✗ commit-msg: could not scan the commit message (grep exit $rc)" >&2
+    echo "  Refusing to commit unchecked. Fix the message file, or override" >&2
+    echo "  deliberately with AISIG_ALLOW=1." >&2
+    exit 1
+  fi
+  return "$rc"
+}
+
+# Two-stage detection, factored into a function so the post-delegate re-check
+# runs EXACTLY this logic. It did not, once: that re-check was a hand-copied
+# single-stage scan, and a delegate appending a FOLDED trailer walked straight
+# through it while the identical text was rejected on the main path.
+# One function, two call sites. Do not inline a third copy.
+#
+# Sets the global `offending` to the matching lines; returns 0 when matched.
+find_ai_trailer() {
+  local file=$1 unfolded aw_rc
+  offending=""
+
+  # Cheap pre-filter: the overwhelming majority of commits name no co-author at
+  # all, and those stop here without paying for the unfold below. The key itself
+  # can never be folded onto a continuation line (git needs it to start the
+  # line), so anchoring is safe at this stage.
+  scan "$KEY" "$file" || return 1
+
+  if scan "$KEY.*\b($AI)\b" "$file"; then
+    offending=$SCAN_OUT
+    return 0
+  fi
+
+  # Raw lines look clean — but git folds a whitespace-indented continuation line
+  # into the preceding trailer's value, so the AI token can sit on the next line
+  # and still be credited.
+  #
+  # Unfold here rather than asking `git interpret-trailers --parse`. That was
+  # tried and reverted: it drops an INDENTED trailer block entirely and only
+  # considers the final paragraph, so an indented key with the token folded onto
+  # the next line sailed through — the scan ran on empty input and called it
+  # clean. One awk pass is faithful to git's folding rule (a line starting with
+  # whitespace continues the one before it), position-independent, forks no git.
+  #
+  # printf-streaming, not `buf = buf " " $0`: the accumulating form is quadratic
+  # — 4x the input costs roughly 20x the time, and 200k indented lines runs to
+  # over a minute against ~0.1s here. Output is byte-identical; absolute
+  # seconds are machine-specific, so the ratio is the part worth recording.
+  # stderr is not merged into the output — errors are caught via $? below, and
+  # folding a diagnostic into the text being scanned only invites confusion.
+  set +e
+  unfolded=$(LC_ALL=C awk '
+        { if ($0 ~ /^[[:space:]]/ && NR > 1) printf " %s", $0
+          else { if (NR > 1) printf "\n"; printf "%s", $0 } }
+        END { if (NR > 0) printf "\n" }
+  ' "$file" 2>/dev/null)
+  aw_rc=$?
+  set -e
+  if [ "$aw_rc" -ne 0 ]; then
+    echo "✗ commit-msg: could not unfold the commit message (awk exit $aw_rc)" >&2
+    echo "  Refusing to commit unchecked. Override with AISIG_ALLOW=1." >&2
+    exit 1
+  fi
+
+  # No `^` anchor on this stage, deliberately: folding joins an indented trailer
+  # onto the line before it, so the key legitimately lands mid-line. Anchoring
+  # re-opened the exact hole the unfold closes — it caught only trailers that
+  # happened to follow a blank line. Narrow regardless: this runs only when a
+  # co-author key is already present, and a hit needs key and token on one
+  # post-fold line. Through scan(), so it keeps the fail-closed guarantee.
+  if scan "$KEY_CORE.*\b($AI)\b" <(printf '%s\n' "$unfolded"); then
+    offending=$SCAN_OUT
+    return 0
+  fi
+  return 1
+}
+
+if [ "${AISIG_ALLOW:-0}" = "1" ]; then
+  # Never skip silently. Exported from a shell profile or a CI env this would
+  # disable the guard for every commit with no way to notice it had happened —
+  # a strictly better bypass than the one this hook documents.
+  echo "⚠ commit-msg: AISIG_ALLOW=1 — AI co-author check SKIPPED for this commit" >&2
+else
+  # Branch on the return code, exactly as the post-delegate call does. An
+  # earlier version tested `[ -n "$offending" ]` here instead: correct only
+  # while grep -n guarantees non-empty output on a match, and it gave one
+  # function two contracts — the very divergence this refactor removed. The
+  # main path is the harder half to test, so it must not be the loose one.
+  if find_ai_trailer "$MSG_FILE"; then
+    exec >&2
+    echo
+    echo "✗ commit-msg: AI co-author trailer rejected"
+    echo
+    # Sanitise before printing. A squashed or fetched message is not authored
+    # by the committer, and a raw ESC or CR in it can repaint this rejection as
+    # a success. [[:cntrl:]] under LC_ALL=C is bytewise 0x00-0x1F plus 0x7F, so
+    # it catches CR — which [:space:] did not — while leaving UTF-8 names legible.
+    printf '%s\n' "$offending" | LC_ALL=C sed -e 's/[[:cntrl:]]/?/g' -e 's/^/    /'
+    echo
+    echo "  GitHub credits Co-authored-by trailers, so this would list an AI tool"
+    echo "  as a contributor to this repo."
+    echo
+    echo "  Fix: remove the line(s) above from your commit message."
+    echo "    - Claude Code / Cursor: turn off co-author attribution in its settings."
+    echo "    - Already committed: git commit --amend"
+    echo
+    echo "  Not a bot? A human co-author at an AI-named domain, and a"
+    echo "  Co-authored-by: example quoted anywhere in the body — indented or"
+    echo "  mid-sentence — all match on purpose. That is what the override is for."
+    echo
+    echo "  Override for this one commit (rare): AISIG_ALLOW=1 git commit ..."
+    echo
+    exit 1
+  fi
+fi
+
+# Delegation: a core.hooksPath (global or repo-local) replaces git's hook lookup
+# entirely, so a repo carrying a conventional .git/hooks/commit-msg would
+# silently lose it. Run it after this check.
+#
+# ONLY .git/hooks/commit-msg is a candidate. A working-tree path such as
+# .githooks/commit-msg must never be one: that is repo content, it arrives with
+# `git clone` carrying its executable bit, and exec'ing it would hand arbitrary
+# code execution to any repository the user merely clones — precisely the thing
+# git's "hooks are not cloned" rule exists to prevent.
+#
+# --git-common-dir, not --git-dir: inside a linked worktree the latter resolves
+# to .git/worktrees/<name>/, where no conventional hooks/ lives, so delegation
+# would silently never happen in exactly the checkouts that need it most.
+# git leaves GIT_DIR unset in an ordinary checkout, so the `-d .git` branch
+# below carries the common case fork-free. A worktree, submodule or
+# --separate-git-dir has .git as a FILE and pays for one `git rev-parse`.
+#
+# DO NOT "optimise" that fork away by deriving the dir from $GIT_DIR with
+# `${GIT_DIR%/worktrees/*}`. That was tried and reverted: in a submodule under
+# a path that itself contains /worktrees/, the strip truncates to an ANCESTOR
+# directory, and the hook then exec's whatever hooks/commit-msg sits there —
+# outside the repository entirely. It saves ~14ms and buys a code-execution
+# path. rev-parse is correct for every shape; let it do the work.
+# `-z "${GIT_DIR:-}"` guards the shortcut: `-d .git` tests the CWD, not the
+# repository being committed to. Under `git --git-dir=X --work-tree=Y commit`
+# git stays in Y and exports GIT_DIR=X, so if Y happens to contain its own
+# .git the shortcut would delegate to the WRONG repository's hook and skip
+# X's entirely. GIT_DIR is unset in an ordinary checkout, so this costs
+# nothing on the hot path.
+if [ -z "${GIT_DIR:-}" ] && [ -d .git ]; then
+  git_dir=.git
+else
+  git_dir=$(git rev-parse --git-common-dir 2>/dev/null || echo .git)
+fi
+
+candidate="$git_dir/hooks/commit-msg"
+
+# -ef compares device+inode and follows symlinks, so a candidate that is a
+# symlink to this file is recognised as self. Comparing resolved path strings
+# missed that, because only the directory was resolved, not the basename.
+if [ -f "$candidate" ] && [ -x "$candidate" ] && ! [ "$candidate" -ef "$0" ]; then
+  # Reached only when such a hook exists, so the cost below is off the hot path.
+  # If THIS file is the repo's own LOCALLY configured hook, git already did hook
+  # lookup and deliberately bypassed .git/hooks/ — reviving it would re-enable a
+  # hook the repo turned off (a stale husky/commitlint/older-installer leftover).
+  # --show-scope --type=path, not --local: `--local` misses a WORKTREE-scoped
+  # core.hooksPath (extensions.worktreeConfig) and returns a literal `~` unexpanded,
+  # and either miss revives the disabled hook. Scope is the real discriminator —
+  # a plain --get would return the effective value and match the global install
+  # against itself, so it would never delegate at all.
+  scoped=$(git config --show-scope --type=path --get core.hooksPath 2>/dev/null || true)
+  # `command` too: `git -c core.hooksPath=...` reports that scope, and git's
+  # lookup bypassed .git/hooks just as deliberately as with a local setting.
+  case "${scoped%%$'\t'*}" in
+    local|worktree|command)
+      configured=${scoped#*$'\t'}
+      # -ef is false when either side is missing, so no separate -e test.
+      [ -n "$configured" ] && [ "$configured/commit-msg" -ef "$0" ] && exit 0
+      ;;
+  esac
+  # Run it as a CHILD, not exec: a commit-msg hook is allowed to REWRITE the
+  # message (Gerrit's Change-Id hook is the canonical one), and exec'ing would
+  # make this scan the last word on a file that then changes underneath it. A
+  # delegate appending a trailer was verified to land credited. Re-check after.
+  "$candidate" "$MSG_FILE" || exit $?
+  if [ "${AISIG_ALLOW:-0}" != "1" ] && find_ai_trailer "$MSG_FILE"; then
+    exec >&2
+    echo
+    echo "✗ commit-msg: the delegated hook added an AI co-author trailer"
+    echo
+    # Sanitised as at the main rejection above: raw ESC or CR would repaint
+    # this as a success.
+    printf '%s\n' "$offending" | LC_ALL=C sed -e 's/[[:cntrl:]]/?/g' -e 's/^/    /'
+    echo
+    echo "  $candidate rewrote the message after this guard had cleared it."
+    echo
+    exit 1
+  fi
+  exit 0
+fi
+
+exit 0

@@ -1,0 +1,35 @@
+# Cheetah
+
+The next-generation web data engine for AI and RAG applications.
+
+## Architecture
+
+Cheetah uses a **Smart Routing Architecture** with tiered workers to minimize compute costs:
+
+- **Gateway** (`gateway/`) — Go/Fiber API handling REST requests, rate limiting, and auth
+- **Smart Router** (`router/`) — Python service that classifies URLs and routes to the right tier
+- **Tier 1: Fast Scraper** (`workers/fast/`) — Rust worker for static pages (reqwest + scraper)
+- **Tier 2: Browser Scraper** (`workers/browser/`) — Node.js/Playwright for JS-rendered pages
+- **Tier 3: Stealth Scraper** (`workers/stealth/`) — Proxy-based scraping for protected sites
+- **AI Layer** (`ai/`) — Python/vLLM for structured extraction and semantic chunking
+
+## Development
+
+Each component has its own build tooling:
+
+```bash
+# Gateway (Go)
+cd gateway && go run .
+
+# Fast worker (Rust)
+cd workers/fast && cargo run
+
+# Browser worker (Node.js)
+cd workers/browser && npm install && npm run dev
+```
+
+## API Endpoints
+
+- `POST /v1/scrape` — Scrape a single URL
+- `POST /v1/crawl` — Crawl a site recursively
+- `POST /v1/extract` — Extract structured data via JSON schema

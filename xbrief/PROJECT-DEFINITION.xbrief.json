@@ -1,0 +1,23 @@
+{
+  "xBRIEFInfo": {
+    "version": "0.8",
+    "description": "Project definition -- synthesized gestalt of the project",
+    "created": "2026-09-30T19:36:26Z",
+    "updated": "2026-09-30T19:36:26Z"
+  },
+  "plan": {
+    "title": "PROJECT-DEFINITION",
+    "status": "running",
+    "narratives": {
+      "Overview": "",
+      "tech stack": "",
+      "Architecture": "",
+      "RisksAndUnknowns": "",
+      "Configuration": ""
+    },
+    "items": [],
+    "metadata": {
+      "staleness_flags": []
+    }
+  }
+}
