@@ -1,6 +1,10 @@
-# Cheetah
+<p align="center">
+  <img src="assets/cheetah-logo.png" alt="Cheetah" width="400">
+</p>
 
-The next-generation web data engine for AI and RAG applications.
+<h1 align="center">Cheetah</h1>
+
+<p align="center">The next-generation web data engine for AI and RAG applications.</p>
 
 ## Architecture
 
