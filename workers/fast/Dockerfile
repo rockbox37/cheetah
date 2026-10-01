@@ -7,6 +7,7 @@ COPY src ./src
 RUN touch src/main.rs src/lib.rs && cargo build --release
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/* && useradd -r -u 1001 appuser
 COPY --from=builder /app/target/release/cheetah-fast /usr/local/bin/cheetah-fast
-CMD ["cheetah-fast", "--redis-url", "redis://redis:6379"]
+USER appuser
+CMD ["cheetah-fast"]

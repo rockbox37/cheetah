@@ -1,8 +1,6 @@
 services:
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -26,6 +24,7 @@ services:
     build: ./workers/fast
     environment:
       RUST_LOG: "cheetah_fast=info"
+      REDIS_URL: "redis://redis:6379"
     depends_on:
       redis:
         condition: service_healthy

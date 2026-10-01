@@ -6,7 +6,8 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /cheetah-gateway .
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates && adduser -D -u 1001 appuser
 COPY --from=builder /cheetah-gateway /usr/local/bin/cheetah-gateway
+USER appuser
 EXPOSE 3000
 CMD ["cheetah-gateway"]
