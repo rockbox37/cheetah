@@ -17,6 +17,16 @@ Cheetah uses a **Smart Routing Architecture** with tiered workers to minimize co
 - **Tier 3: Stealth Scraper** (`workers/stealth/`) — Proxy-based scraping for protected sites
 - **AI Layer** (`ai/`) — Python/vLLM for structured extraction and semantic chunking
 
+## Quick Start
+
+Run the full stack (gateway + fast worker + Redis) with one command:
+
+```bash
+docker compose up
+```
+
+The API will be available at `http://localhost:3000`.
+
 ## Development
 
 Each component has its own build tooling:

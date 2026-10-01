@@ -153,37 +153,48 @@ async fn main() -> anyhow::Result<()> {
                     let result = fetch_page(&client, &url, &cfg).await;
                     let result_key = format!("{}:{}", results_prefix, job_id);
 
-                    match result {
+                    let status_payload = match result {
                         Ok(page) => {
-                            let payload = serde_json::to_string(&page).unwrap_or_default();
-                            // P1 fix: Store results as individual keys with a 1-hour TTL
-                            // instead of hash fields (HSET has no per-field expiry).
-                            let _: Result<(), _> = redis::cmd("SET")
-                                .arg(&result_key)
-                                .arg(&payload)
-                                .arg("EX")
-                                .arg(3600_u64)
-                                .query_async(&mut task_conn)
-                                .await;
                             info!(url = %url, job_id = %job_id, status = page.status_code, "job complete");
+                            serde_json::json!({
+                                "job_id": job_id,
+                                "status": "completed",
+                                "pages_total": 1,
+                                "pages_completed": 1,
+                                "results": [{
+                                    "success": true,
+                                    "data": {
+                                        "content": page.raw_html,
+                                        "markdown": page.markdown,
+                                        "metadata": {
+                                            "title": page.title.unwrap_or_default(),
+                                            "description": page.description.unwrap_or_default(),
+                                            "language": page.language.unwrap_or_default(),
+                                            "status_code": page.status_code,
+                                        }
+                                    }
+                                }]
+                            })
                         }
                         Err(e) => {
-                            let error_payload = serde_json::json!({
-                                "job_id": job_id,
-                                "url": url,
-                                "error": e.to_string(),
-                                "fetched_at": chrono::Utc::now(),
-                            });
-                            let _: Result<(), _> = redis::cmd("SET")
-                                .arg(&result_key)
-                                .arg(error_payload.to_string())
-                                .arg("EX")
-                                .arg(3600_u64)
-                                .query_async(&mut task_conn)
-                                .await;
                             error!(url = %url, job_id = %job_id, error = %e, "job failed");
+                            serde_json::json!({
+                                "job_id": job_id,
+                                "status": "failed",
+                                "pages_total": 1,
+                                "pages_completed": 0,
+                                "results": []
+                            })
                         }
-                    }
+                    };
+
+                    let _: Result<(), _> = redis::cmd("SET")
+                        .arg(&result_key)
+                        .arg(status_payload.to_string())
+                        .arg("EX")
+                        .arg(3600_u64)
+                        .query_async(&mut task_conn)
+                        .await;
 
                     let _: Result<(), _> = redis::cmd("XACK")
                         .arg(&stream_name)

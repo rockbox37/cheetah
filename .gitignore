@@ -1,4 +1,5 @@
 # Go
+gateway/gateway
 gateway/cheetah-gateway
 *.exe
 *.exe~
