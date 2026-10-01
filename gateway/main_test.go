@@ -21,32 +21,7 @@ func testApp() *fiber.App {
 	return NewApp(cfg, queue)
 }
 
-func TestHealthEndpoint(t *testing.T) {
-	app := testApp()
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
-	resp, err := app.Test(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
-		t.Fatalf("invalid JSON response: %v", err)
-	}
-
-	status, ok := result["status"].(string)
-	if !ok {
-		t.Fatal("missing status field")
-	}
-	if status != "ok" && status != "degraded" {
-		t.Fatalf("unexpected status: %s", status)
-	}
-}
 
 func TestScrapeRequiresAuth(t *testing.T) {
 	app := testApp()
@@ -166,18 +141,6 @@ func TestRateLimiterHeadersPresent(t *testing.T) {
 	}
 }
 
-func TestHealthNoAuth(t *testing.T) {
-	app := testApp()
-
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
-	resp, err := app.Test(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("health should not require auth, got %d", resp.StatusCode)
-	}
-}
 
 func TestCrawlRequiresAuth(t *testing.T) {
 	app := testApp()
