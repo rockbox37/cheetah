@@ -1,15 +1,46 @@
 use cheetah_fast::{fetch_page, FetchConfig};
 use clap::Parser;
 use reqwest::Client;
+use serde::Serialize;
 use std::sync::Arc;
 use tokio::signal;
 use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
 
+#[derive(Serialize)]
+struct StatusPayload<'a> {
+    job_id: &'a str,
+    status: &'static str,
+    pages_total: u32,
+    pages_completed: u32,
+    results: Vec<ResultEntry<'a>>,
+}
+
+#[derive(Serialize)]
+struct ResultEntry<'a> {
+    success: bool,
+    data: ResultData<'a>,
+}
+
+#[derive(Serialize)]
+struct ResultData<'a> {
+    content: &'a str,
+    markdown: &'a str,
+    metadata: ResultMetadata<'a>,
+}
+
+#[derive(Serialize)]
+struct ResultMetadata<'a> {
+    title: &'a str,
+    description: &'a str,
+    language: &'a str,
+    status_code: u16,
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "cheetah-fast", about = "Fast static page scraper worker")]
 struct Args {
-    #[arg(long, default_value = "redis://127.0.0.1:6379")]
+    #[arg(long, env = "REDIS_URL", default_value = "redis://127.0.0.1:6379")]
     redis_url: String,
 
     #[arg(long, default_value_t = 50)]
@@ -153,37 +184,54 @@ async fn main() -> anyhow::Result<()> {
                     let result = fetch_page(&client, &url, &cfg).await;
                     let result_key = format!("{}:{}", results_prefix, job_id);
 
-                    match result {
+                    let (payload, title_buf, desc_buf, lang_buf);
+                    let serialized = match result {
                         Ok(page) => {
-                            let payload = serde_json::to_string(&page).unwrap_or_default();
-                            // P1 fix: Store results as individual keys with a 1-hour TTL
-                            // instead of hash fields (HSET has no per-field expiry).
-                            let _: Result<(), _> = redis::cmd("SET")
-                                .arg(&result_key)
-                                .arg(&payload)
-                                .arg("EX")
-                                .arg(3600_u64)
-                                .query_async(&mut task_conn)
-                                .await;
                             info!(url = %url, job_id = %job_id, status = page.status_code, "job complete");
+                            title_buf = page.title.unwrap_or_default();
+                            desc_buf = page.description.unwrap_or_default();
+                            lang_buf = page.language.unwrap_or_default();
+                            payload = StatusPayload {
+                                job_id: &job_id,
+                                status: "completed",
+                                pages_total: 1,
+                                pages_completed: 1,
+                                results: vec![ResultEntry {
+                                    success: true,
+                                    data: ResultData {
+                                        content: &page.raw_html,
+                                        markdown: &page.markdown,
+                                        metadata: ResultMetadata {
+                                            title: &title_buf,
+                                            description: &desc_buf,
+                                            language: &lang_buf,
+                                            status_code: page.status_code,
+                                        },
+                                    },
+                                }],
+                            };
+                            serde_json::to_string(&payload).unwrap_or_default()
                         }
                         Err(e) => {
-                            let error_payload = serde_json::json!({
-                                "job_id": job_id,
-                                "url": url,
-                                "error": e.to_string(),
-                                "fetched_at": chrono::Utc::now(),
-                            });
-                            let _: Result<(), _> = redis::cmd("SET")
-                                .arg(&result_key)
-                                .arg(error_payload.to_string())
-                                .arg("EX")
-                                .arg(3600_u64)
-                                .query_async(&mut task_conn)
-                                .await;
                             error!(url = %url, job_id = %job_id, error = %e, "job failed");
+                            payload = StatusPayload {
+                                job_id: &job_id,
+                                status: "failed",
+                                pages_total: 1,
+                                pages_completed: 0,
+                                results: vec![],
+                            };
+                            serde_json::to_string(&payload).unwrap_or_default()
                         }
-                    }
+                    };
+
+                    let _: Result<(), _> = redis::cmd("SET")
+                        .arg(&result_key)
+                        .arg(&serialized)
+                        .arg("EX")
+                        .arg(3600_u64)
+                        .query_async(&mut task_conn)
+                        .await;
 
                     let _: Result<(), _> = redis::cmd("XACK")
                         .arg(&stream_name)
