@@ -21,8 +21,6 @@ func testApp() *fiber.App {
 	return NewApp(cfg, queue)
 }
 
-
-
 func TestScrapeRequiresAuth(t *testing.T) {
 	app := testApp()
 
@@ -140,7 +138,6 @@ func TestRateLimiterHeadersPresent(t *testing.T) {
 		t.Fatal("missing X-RateLimit-Remaining header")
 	}
 }
-
 
 func TestCrawlRequiresAuth(t *testing.T) {
 	app := testApp()

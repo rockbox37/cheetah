@@ -65,8 +65,7 @@ func NewApp(cfg Config, queue *QueueClient) *fiber.App {
 
 	app.Use(RequestLogger())
 
-	app.Get("/health", handleHealthDiagnostic(queue))
-	app.Get("/v1/health", handleHealthDiagnostic(queue))
+	app.Get("/health", handleHealthLiveness(queue))
 
 	v1 := app.Group("/v1")
 	if len(cfg.APIKeys) > 0 {
@@ -81,6 +80,7 @@ func NewApp(cfg Config, queue *QueueClient) *fiber.App {
 	}
 	v1.Use(RateLimiter())
 
+	v1.Get("/health", handleHealthDiagnostic(queue))
 	v1.Post("/scrape", handleScrape(queue))
 	v1.Post("/crawl", handleCrawl(queue))
 	v1.Post("/extract", handleExtract(queue))
