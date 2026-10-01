@@ -3,19 +3,24 @@ package main
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
 )
 
-const healthTimeout = 3 * time.Second
+const (
+	healthTimeout    = 3 * time.Second
+	livenessCacheTTL = 5 * time.Second
+	tierFast         = "fast"
+)
 
 var monitoredStreams = []struct {
 	stream string
 	tier   string
 }{
-	{"scrape_jobs", "fast"},
+	{"scrape_jobs", tierFast},
 	{"browser_jobs", "browser"},
 	{"stealth_jobs", "stealth"},
 	{"crawl_jobs", "crawl"},
@@ -45,27 +50,55 @@ type WorkerHealth struct {
 	IdleMs          *int64 `json:"idle_ms,omitempty"`
 }
 
+type livenessEntry struct {
+	status string
+	code   int
+	at     time.Time
+}
+
 func (q *QueueClient) PingLatency(ctx context.Context) (time.Duration, error) {
 	start := time.Now()
 	err := q.rdb.Ping(ctx).Err()
 	return time.Since(start), err
 }
 
-func (q *QueueClient) StreamInfo(ctx context.Context, stream string) (length int64, groups []redis.XInfoGroup, err error) {
-	length, err = q.rdb.XLen(ctx, stream).Result()
-	if err != nil {
-		return 0, nil, err
-	}
+type streamSnapshot struct {
+	length int64
+	groups []redis.XInfoGroup
+	err    error
+}
 
-	groups, err = q.rdb.XInfoGroups(ctx, stream).Result()
-	if err != nil {
-		if isNoStreamErr(err) {
-			return length, nil, nil
+func (q *QueueClient) streamInfoBatch(ctx context.Context) map[string]streamSnapshot {
+	out := make(map[string]streamSnapshot, len(monitoredStreams))
+
+	pipe := q.rdb.Pipeline()
+	xlenCmds := make(map[string]*redis.IntCmd, len(monitoredStreams))
+	xinfoCmds := make(map[string]*redis.XInfoGroupsCmd, len(monitoredStreams))
+	for _, s := range monitoredStreams {
+		xlenCmds[s.stream] = pipe.XLen(ctx, s.stream)
+		xinfoCmds[s.stream] = pipe.XInfoGroups(ctx, s.stream)
+	}
+	_, _ = pipe.Exec(ctx)
+
+	for _, s := range monitoredStreams {
+		snap := streamSnapshot{}
+		snap.length, snap.err = xlenCmds[s.stream].Result()
+		if snap.err != nil {
+			out[s.stream] = snap
+			continue
 		}
-		return length, nil, err
+		groups, err := xinfoCmds[s.stream].Result()
+		if err != nil {
+			if !isNoStreamErr(err) {
+				snap.err = err
+			}
+		} else {
+			snap.groups = groups
+		}
+		out[s.stream] = snap
 	}
 
-	return length, groups, nil
+	return out
 }
 
 func (q *QueueClient) OldestPending(ctx context.Context, stream, group string) (*int64, error) {
@@ -92,7 +125,20 @@ func isNoStreamErr(err error) bool {
 }
 
 func handleHealthLiveness(queue *QueueClient) fiber.Handler {
+	var (
+		mu    sync.Mutex
+		cache livenessEntry
+	)
+
 	return func(c *fiber.Ctx) error {
+		mu.Lock()
+		if time.Since(cache.at) < livenessCacheTTL {
+			status, code := cache.status, cache.code
+			mu.Unlock()
+			return c.Status(code).JSON(fiber.Map{"status": status})
+		}
+		mu.Unlock()
+
 		ctx, cancel := context.WithTimeout(context.Background(), healthTimeout)
 		defer cancel()
 
@@ -103,6 +149,10 @@ func handleHealthLiveness(queue *QueueClient) fiber.Handler {
 			status = "unhealthy"
 			code = fiber.StatusServiceUnavailable
 		}
+
+		mu.Lock()
+		cache = livenessEntry{status: status, code: code, at: time.Now()}
+		mu.Unlock()
 
 		return c.Status(code).JSON(fiber.Map{"status": status})
 	}
@@ -127,13 +177,15 @@ func handleHealthDiagnostic(queue *QueueClient) fiber.Handler {
 		workers := make(map[string]WorkerHealth)
 
 		if pingErr == nil {
+			snapshots := queue.streamInfoBatch(ctx)
+
 			for _, s := range monitoredStreams {
-				length, groups, err := queue.StreamInfo(ctx, s.stream)
-				qh := QueueHealth{Length: length}
+				snap := snapshots[s.stream]
+				qh := QueueHealth{Length: snap.length}
 				wh := WorkerHealth{}
 
-				if err == nil {
-					for _, g := range groups {
+				if snap.err == nil {
+					for _, g := range snap.groups {
 						n := int(g.Consumers)
 						qh.Consumers += n
 						wh.ActiveConsumers += n
@@ -147,10 +199,7 @@ func handleHealthDiagnostic(queue *QueueClient) fiber.Handler {
 					}
 
 					if wh.ActiveConsumers > 0 {
-						idleMs := queue.minConsumerIdle(ctx, s.stream, groups)
-						if idleMs != nil {
-							wh.IdleMs = idleMs
-						}
+						wh.IdleMs = queue.minConsumerIdle(ctx, s.stream, snap.groups)
 					}
 				}
 
@@ -202,7 +251,7 @@ func computeOverallStatus(r RedisHealth, workers map[string]WorkerHealth) string
 		return "unhealthy"
 	}
 
-	fastWorker, hasFast := workers["fast"]
+	fastWorker, hasFast := workers[tierFast]
 	if !hasFast || fastWorker.ActiveConsumers == 0 {
 		return "degraded"
 	}
