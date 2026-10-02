@@ -9,7 +9,7 @@ type ScrapeRequest struct {
 	WaitFor       string           `json:"wait_for,omitempty"`
 	Timeout       int              `json:"timeout,omitempty"`
 	Wait          bool             `json:"wait,omitempty"`
-	ResolvedIP    string           `json:"resolved_ip,omitempty"`
+	ResolvedIP    string           `json:"-"`
 }
 
 type ScrapeResponse struct {
@@ -37,6 +37,7 @@ type CrawlRequest struct {
 	IncludePatterns []string `json:"include_patterns,omitempty"`
 	ExcludePatterns []string `json:"exclude_patterns,omitempty"`
 	Format          string   `json:"format,omitempty"`
+	ResolvedIP      string   `json:"-"`
 }
 
 type CrawlResponse struct {

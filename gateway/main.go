@@ -200,12 +200,14 @@ func handleCrawl(queue *QueueClient) fiber.Handler {
 			})
 		}
 
-		if _, err := ValidateScrapeURL(req.URL); err != nil {
+		resolvedIP, err := ValidateScrapeURL(req.URL)
+		if err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
 				Success: false,
 				Error:   err.Error(),
 			})
 		}
+		req.ResolvedIP = resolvedIP
 
 		if req.MaxPages <= 0 {
 			req.MaxPages = 10
