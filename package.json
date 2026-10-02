@@ -1,6 +1,6 @@
 {
   "private": true,
   "devDependencies": {
-    "@deftai/directive": "0.119.9"
+    "@deftai/directive": "0.119.11"
   }
 }

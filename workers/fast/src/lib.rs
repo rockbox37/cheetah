@@ -4,7 +4,7 @@ use reqwest::Client;
 use scraper::{ElementRef, Html, Node, Selector};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as FmtWrite;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::net::lookup_host;
 
@@ -106,10 +106,33 @@ impl Default for FetchConfig {
     }
 }
 
-pub async fn fetch_page(client: &Client, url: &str, config: &FetchConfig) -> Result<PageResult> {
-    validate_url_ip(url).await?;
+pub async fn fetch_page(
+    client: &Client,
+    url: &str,
+    config: &FetchConfig,
+    pinned_ip: Option<IpAddr>,
+) -> Result<PageResult> {
+    let parsed_url = reqwest::Url::parse(url).map_err(|_| Error::SsrfBlocked)?;
+    let host = parsed_url.host_str().ok_or(Error::SsrfBlocked)?.to_string();
+    let port = parsed_url.port_or_known_default().unwrap_or(80);
 
-    let resp = client
+    let effective_client;
+    let req_client: &Client = if let Some(ip) = pinned_ip {
+        if is_private_ip(ip) {
+            return Err(Error::SsrfBlocked);
+        }
+        effective_client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve(&host, SocketAddr::new(ip, port))
+            .build()
+            .map_err(|e| Error::Http(e))?;
+        &effective_client
+    } else {
+        validate_url_ip(url).await?;
+        client
+    };
+
+    let resp = req_client
         .get(url)
         .header("User-Agent", &config.user_agent)
         .timeout(config.timeout)
@@ -467,6 +490,24 @@ mod tests {
     async fn ssrf_allows_public() {
         let result = validate_url_ip("https://example.com/").await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn pinned_private_ip_rejected() {
+        let config = FetchConfig::default();
+        let client = Client::new();
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+        let result = fetch_page(&client, "http://example.com/", &config, Some(loopback)).await;
+        assert!(matches!(result, Err(Error::SsrfBlocked)));
+    }
+
+    #[tokio::test]
+    async fn pinned_metadata_ip_rejected() {
+        let config = FetchConfig::default();
+        let client = Client::new();
+        let metadata: IpAddr = "169.254.169.254".parse().unwrap();
+        let result = fetch_page(&client, "http://example.com/", &config, Some(metadata)).await;
+        assert!(matches!(result, Err(Error::SsrfBlocked)));
     }
 
     #[test]
