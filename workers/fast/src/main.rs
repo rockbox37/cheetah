@@ -2,6 +2,7 @@ use cheetah_fast::{fetch_page, FetchConfig};
 use clap::Parser;
 use reqwest::Client;
 use serde::Serialize;
+use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::signal;
 use tokio::sync::Semaphore;
@@ -169,6 +170,17 @@ async fn main() -> anyhow::Result<()> {
                     })
                     .unwrap_or_else(|| entry_id.clone());
 
+                let pinned_ip: Option<IpAddr> = entry
+                    .map
+                    .get("resolved_ip")
+                    .and_then(|v| match v {
+                        redis::Value::BulkString(bytes) => {
+                            let s = String::from_utf8_lossy(bytes);
+                            s.parse().ok()
+                        }
+                        _ => None,
+                    });
+
                 let permit = semaphore.clone().acquire_owned().await.unwrap();
                 let client = http_client.clone();
                 let cfg = config.clone();
@@ -179,9 +191,9 @@ async fn main() -> anyhow::Result<()> {
 
                 tokio::spawn(async move {
                     let _permit = permit;
-                    info!(url = %url, job_id = %job_id, "processing job");
+                    info!(url = %url, job_id = %job_id, pinned_ip = ?pinned_ip, "processing job");
 
-                    let result = fetch_page(&client, &url, &cfg).await;
+                    let result = fetch_page(&client, &url, &cfg, pinned_ip).await;
                     let result_key = format!("{}:{}", results_prefix, job_id);
 
                     let (payload, title_buf, desc_buf, lang_buf);

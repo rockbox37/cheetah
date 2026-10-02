@@ -9,6 +9,7 @@ type ScrapeRequest struct {
 	WaitFor       string           `json:"wait_for,omitempty"`
 	Timeout       int              `json:"timeout,omitempty"`
 	Wait          bool             `json:"wait,omitempty"`
+	ResolvedIP    string           `json:"resolved_ip,omitempty"`
 }
 
 type ScrapeResponse struct {

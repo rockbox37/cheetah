@@ -147,12 +147,14 @@ func handleScrape(queue *QueueClient) fiber.Handler {
 			})
 		}
 
-		if err := ValidateScrapeURL(req.URL); err != nil {
+		resolvedIP, err := ValidateScrapeURL(req.URL)
+		if err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
 				Success: false,
 				Error:   err.Error(),
 			})
 		}
+		req.ResolvedIP = resolvedIP
 
 		if req.Format == "" {
 			req.Format = "markdown"
@@ -198,7 +200,7 @@ func handleCrawl(queue *QueueClient) fiber.Handler {
 			})
 		}
 
-		if err := ValidateScrapeURL(req.URL); err != nil {
+		if _, err := ValidateScrapeURL(req.URL); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
 				Success: false,
 				Error:   err.Error(),
@@ -257,7 +259,8 @@ func handleExtract(queue *QueueClient) fiber.Handler {
 			})
 		}
 
-		if err := ValidateScrapeURL(req.URL); err != nil {
+		resolvedIP, err := ValidateScrapeURL(req.URL)
+		if err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
 				Success: false,
 				Error:   err.Error(),
@@ -286,6 +289,7 @@ func handleExtract(queue *QueueClient) fiber.Handler {
 			WaitFor:       req.WaitFor,
 			Timeout:       req.Timeout,
 			Wait:          req.Wait,
+			ResolvedIP:    resolvedIP,
 		}
 
 		owner := callerOwner(c)

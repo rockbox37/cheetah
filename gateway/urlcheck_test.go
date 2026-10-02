@@ -79,7 +79,7 @@ func TestValidateScrapeURL_Scheme(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateScrapeURL(tt.url)
+			_, err := ValidateScrapeURL(tt.url)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateScrapeURL(%q) error = %v, wantErr = %v", tt.url, err, tt.wantErr)
 			}
@@ -103,10 +103,27 @@ func TestValidateScrapeURL_PrivateIPs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateScrapeURL(tt.url)
+			_, err := ValidateScrapeURL(tt.url)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateScrapeURL(%q) error = %v, wantErr = %v", tt.url, err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateScrapeURL_ReturnsPinnedIP(t *testing.T) {
+	ip, err := ValidateScrapeURL("https://example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ip == "" {
+		t.Fatal("expected a non-empty pinned IP")
+	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		t.Fatalf("returned IP %q is not a valid IP address", ip)
+	}
+	if isPrivateIP(parsed) {
+		t.Fatalf("returned IP %q is private", ip)
 	}
 }

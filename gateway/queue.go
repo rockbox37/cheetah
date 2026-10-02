@@ -59,10 +59,11 @@ func (q *QueueClient) EnqueueScrape(ctx context.Context, req ScrapeRequest, owne
 		MaxLen: streamMaxLen,
 		Approx: true,
 		Values: map[string]interface{}{
-			"job_id":  jobID,
-			"url":     req.URL,
-			"format":  req.Format,
-			"payload": string(payload),
+			"job_id":      jobID,
+			"url":         req.URL,
+			"format":      req.Format,
+			"resolved_ip": req.ResolvedIP,
+			"payload":     string(payload),
 		},
 	}).Err()
 	if err != nil {
