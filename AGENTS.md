@@ -18,7 +18,7 @@ Scoped work, ranked queue, and tracked bugs live in authoritative sources — no
 
 (Optional) Ephemeral shell quirks or uncommitted local artifacts only — not tracked work state.
 
-<!-- deft:managed-section v3 sha=0.119.9 refreshed=2026-09-30T19:36:25Z session=61ebbc9ae494 -->
+<!-- deft:managed-section v3 sha=0.119.9 refreshed=2026-10-02T02:36:39Z session=57fb446ca255 -->
 # Deft — AI Development Framework
 
 Deft is installed in .deft/core/. Full guidelines: .deft/core/main.md
@@ -35,9 +35,13 @@ Deft is installed in .deft/core/. Full guidelines: .deft/core/main.md
 ! Opaque non-zero exit (usually 127) on every mutation = `deft-hook` is not executable on this host, not a Directive deny — no Directive code ran, and no in-session flag reaches it. Out of band: `deft policy:disable-host-hooks --host cursor --confirm`, or install the runtime (`npm i -g @deftai/directive@<pin>`). Depth: `.deft/core/docs/hook-runtime-unavailable.md`.
 ⊗ Hand-edit `failClosed` in `.cursor/hooks.json` — the next `deft update` rewrites it and silently re-arms the lockout.
 
+## Codex ritual-git recovery (#4664)
+
+! Codex sandbox EPERM on ritual `git` → approve outside-sandbox once for the session (`/approvals` / session trust). Depth: `.deft/core/contracts/agent-hook-readiness.md`. ⊗ Invent an in-process git substitute; ⊗ treat repeated per-verb prompts as Continuity discharge.
+
 ## Session routing (#2176)
 
-! **Read-only default** until mutation intent: load AGENTS.md / main.md / USER.md / `xbrief/PROJECT-DEFINITION.xbrief.json`; resolve USER.md via `deft session:start` (`USER.md resolved …`; win32 `%APPDATA%\deft\USER.md`; unix `~/.config/deft/USER.md`; ⊗ invent `~/.config/deft` on Windows #2544); confirm Deft alignment + addressing-name; ⊗ no mutable `deft session:start` / triage welcome / sync / branch-policy unless asked or implementation-ready (#2176) — `.deft/core/commands.md` § Session routing. Bootstrap: Cold-start (#2273) → #4090 (`directive doctor --full`, then `npm i -g @deftai/directive@<pin>`) ⊗ never a payload path; pre-cutover → setup Pre-Cutover (#2068); missing USER.md / PROJECT-DEFINITION → setup Phase 1/2 (#1813) ⊗ before answering; else main → USER → PROJECT-DEFINITION; ~ sync. identity-only + product mutation → Phase 3 Starting-new / Rapid before Mutation (Process-only; ⊗ --prompt). Mutation → `deft session:start` then `deft verify:session-ritual -- --tier=gated` (#1149). Occupancy (#4625): not #3334/#3396; ritual does not bind complete/check (occupancyLive; #3729). ⊗#3805. Dest-wo: process-only, leftover complete, finalize-cohort. #4624. Stale-ritual (#4290): name ready/rearm/cold only when occupancy admits this actor; restricted primary → `--primary-claim-exception=operator-default-branch` or linked-worktree same-actor. ? `deft session:start -- --read-only` (#2176). ? Tracked docs: `deft session:start --posture=requirements` (#4444).
+! **Read-only default** until mutation intent: load AGENTS.md / main.md / USER.md / `xbrief/PROJECT-DEFINITION.xbrief.json`; resolve USER.md via `deft session:start` (`USER.md resolved …`; win32 `%APPDATA%\deft\USER.md`; unix `~/.config/deft/USER.md`; ⊗ invent `~/.config/deft` on Windows #2544); confirm Deft alignment + addressing-name; ⊗ no mutable `deft session:start` / triage welcome / sync / branch-policy unless asked or implementation-ready (#2176) — `.deft/core/commands.md` § Session routing. Bootstrap: Cold-start (#2273) → PATH `directive --version` / `deft --version` vs pin (doctor exit 0 is not skip) → #4090 (`directive doctor --full`, then `evaluateSkew`: `reject-global`→`npm i -g @deftai/directive@<pin>`, else follow emitted decision, no pin and no deposit→ `npx @deftai/directive init` → re-compare) ⊗ never a payload path; pre-cutover → setup Pre-Cutover (#2068); missing USER.md / PROJECT-DEFINITION → setup Phase 1/2 (#1813) ⊗ before answering; else main → USER → PROJECT-DEFINITION; ~ sync. identity-only + product mutation → Phase 3 Starting-new / Rapid before Mutation (Process-only; ⊗ --prompt). Mutation → `deft session:start` then `deft verify:session-ritual -- --tier=gated` (#1149). Occupancy (#4625): not #3334/#3396; ritual does not bind complete/check (occupancyLive; #3729). ⊗#3805. Dest-wo: process-only, leftover complete, finalize-cohort. #4624. Stale-ritual (#4290): name ready/rearm/cold only when occupancy admits this actor; restricted primary → `--primary-claim-exception=operator-default-branch` or linked-worktree same-actor. ? `deft session:start -- --read-only` (#2176). ? Tracked docs: `deft session:start --posture=requirements` (#4444).
 
 ## Session-start ritual (#1149)
 
@@ -109,7 +113,7 @@ Deft is installed in .deft/core/. Full guidelines: .deft/core/main.md
 
 ## Through-merge worker dispatch (#3032)
 
-! On **through merge** / **drive to merge** / land-ship / **drive-to: merge-ready** story intent: parent MUST dispatch a worker via the **swarm/solo-worker launch path** even if **cohort size is 1** — parent MUST NOT implement as the leaf. Default envelope is `drive-to: merge-ready` (worktree, preflight, pre-pr, review-cycle, merge/`scope:complete`). **Grok through-merge (#4529 / #4821):** implement is `stop-at: pr-open` — not Gap C silent handback; Envelope SLA names dest residual then closer. Depth: swarm Phase 0 + skill-pin-policy (#3032 / #1880 Gap C). Spawn dest (#4066 / #4295): dest-place before occupancy. Cursor local is dest-placing (nursery inherit or dest-rooted `@cursor/sdk` `Agent.create`); ⊗ Task dest keys.
+! On **through merge** / **drive to merge** / land-ship / **drive-to: merge-ready** story intent: parent MUST dispatch via the **swarm/solo-worker launch path** even if **cohort size is 1** — parent MUST NOT implement as the leaf. **#3032 solo path** = interactive swarm skill (Phase 0; Mode B; `dispatch_kind: solo`; #3669). Headless `swarm:launch` concurrent-gated; N=1 sequential declined. Default `drive-to: merge-ready`. **Grok (#4529 / #4821):** `stop-at: pr-open` — not Gap C silent handback; Envelope SLA names dest residual then closer. Depth: swarm Phase 0 + skill-pin-policy (#3032 / #1880 Gap C). Spawn dest (#4066 / #4295): dest-place before occupancy. Cursor local is dest-placing (nursery inherit or dest-rooted `@cursor/sdk` `Agent.create`); ⊗ Task dest keys.
 ⊗ Parent conversation implements or babysits product fix/CI loops for drive-to:merge-ready work when background subagent/worktree dispatch is available (#3032). ⊗ Harvest a Grok `drive-to: merge-ready` continuation as that partner (#4529).
 ! After leaf announce: tool-first / yield / one short non-repeated answer; ⊗ N>2 near-identical zero-tool (FC14 / #3131). Machine: `evaluateParentTurnShape` (`parent-turn-shape`). Depth: preamble §11 + `docs/openclaw-agent-host.md`.
 
@@ -119,7 +123,7 @@ Deft is installed in .deft/core/. Full guidelines: .deft/core/main.md
 ! **Grok through-merge (#4529 / #4821):** implement MUST be `stop-at: pr-open`. Dest class A residual, then Approach 1 wait, then parent-retained closer after CLEAN. Not a global SLA recut. ⊗ Harvest option 2 / `merge-release` / parent-inline residual.
 ! After stop-at:pr-open (#4882), merge-path owner MUST keep a still-running phase-correct wait (pre-CLEAN: blocking `pr:watch` / Approach 1; post-CLEAN: `pr:wait-mergeable-and-merge`) until CLEAN or explicit option-C finish; under human-merge also remain for post-merge `scope:complete`. Sticky lease alone or Path B promise without a live wait is unarmed; CLEAN alone is not lifecycle complete. Probe: `deft verify:review-monitor -- --pr <N> --merge-path-arm` (`--live-wait` / `--explicit-finish`). `pr:watch --json` wrappers MUST parse full stdout JSON (pretty multi-line valid); line-split misses CLEAN (#5015). Prefer native `pr:watch`.
 ⊗ Silent PR-open handback for a worker already scoped `drive-to: merge-ready`. ⊗ `stop-at: pr-open` without a named babysit / merge-path owner, or dual review-monitor leases on recovery (#3044 / #2261). ⊗ Stand down unarmed, or treat lease-only / line-parsed `pr-watch --json` as armed (#4882).
-! After merge of issue `#N`, `deft verify:orphan-active -- --issue N` MUST exit 0 before `DONE` (#3429). After `scope:complete`, `deft verify:completed-tracked -- --issue N` MUST exit 0 on `origin/<deliveryBranch>` before `DONE` (#3476). Exit 1 shipped → printed `scope:complete`; missing tracked land → `swarm:finalize-cohort` or a lifecycle PR; unresolved lookup → retry / `BLOCKED` (⊗ complete unfinished scope). **Grok leftover (#4529):** Phase 6 `swarm:finalize-cohort`, not the implement dest.
+! After merge of issue `#N`, `deft verify:orphan-active -- --issue N` MUST exit 0 before `DONE` (#3429). After `scope:complete` (cancel≠ship exit #5126), `deft verify:completed-tracked -- --issue N` MUST exit 0 on `origin/<deliveryBranch>` before `DONE` (#3476). Exit 1 shipped → printed `scope:complete`; missing tracked land → `swarm:finalize-cohort` or a lifecycle PR; unresolved lookup → retry / `BLOCKED` (⊗ complete unfinished scope). **Grok leftover (#4529):** Phase 6 `swarm:finalize-cohort`, not the implement dest.
 ⊗ Emit `ISSUE: closed` while that brief is still in `active/`.
 
 ## Nuclear-family A2A topology (#3155)
@@ -154,7 +158,7 @@ Deft is installed in .deft/core/. Full guidelines: .deft/core/main.md
 ## Branch policy & branch verification
 
 ! Feature branches — `deft verify:branch`, `deft verify:forward-coverage` (90% warn-first, #3514), `deft coverage:hotspots`, hooks, `deft check` (#746 / #747) — `.deft/core/scm/github.md`. One origin/PR else one-PR-unit grant (not #1378/`--allow-close`).
-! Test placement + scope provenance (#3145 / #4956) — `deft verify:test-boundary` (warn-only), `deft verify:scope-provenance` (merge-base `file_scope` fence; production allowance 2–5; test roots free), `deft verify:consumer-check-contract`, `deft verify:evaluator-surface`, `deft verify:class-checks`, `deft verify:observable-scope`, `deft verify:intent-constraint`, `deft verify:consumer-test-lane` (docs: `docs/test-boundary.md`, `docs/scope-provenance.md`).
+! Scope gates (#3145 / #4956) — `deft verify:test-boundary` (warn-only), `deft verify:scope-provenance` (merge-base `file_scope` fence; production allowance 2–5; test roots free), `deft verify:consumer-check-contract`, `deft verify:evaluator-surface`, `deft verify:class-checks`, `deft verify:observable-scope`, `deft verify:intent-constraint`, `deft verify:presentation-ceiling`, `deft verify:presentation-coverage`, `deft verify:durable-effect-acquisition`, `deft verify:consumer-test-lane` (docs: `docs/test-boundary.md`, `docs/scope-provenance.md`).
 ! After proceed: no scope ceremony (#4956). No approved-scope digest on proceed; head brief does not widen the fence; over-budget splits (no remint). Class checks #4980. #4383 still open. Depth: `docs/scope-provenance.md`.
 
 ## Branch Policy Disclosure (#746)
@@ -173,7 +177,7 @@ Deft is installed in .deft/core/. Full guidelines: .deft/core/main.md
 
 ! Detect OS/shell; use portable syntax or explicit shell (#2568). `.deft/core/scm/github.md` (#2157/#2369): PS encoding→`deft verify:encoding` (#798); TS capture; cascade→`deft pr:wait-mergeable-and-merge`; SCM→`deft verify:scm-boundary`.
 ! Forge outage (#3422): drop GitHub I/O on attributed outage or repeated 429/502/503; report once to the human; re-probe on `plan.policy.forgeOutageRetryMinutes` (default 30; USER.md Personal wins). Depth: `scm/github.md` § #3180.
-! Credential-class ban (#3858 / #2275): no GitHub App installation credential may drive `scm issue *`, `issue:ingest`, and `reconcile:issues`. Those three verbs parse `--repo` / `-R` before `requireScmReady` at depth deep. Doctor and default `session:start` stay shallow. Depth: `scm/github.md` § #2275.
+! Credential-class ban (#3858 / #2275): installation authentication may be admitted without claiming App identity when no user is required (#5016). Those three verbs parse `--repo` / `-R` before `requireScmReady` at depth deep. Doctor and default `session:start` stay shallow. Depth: `scm/github.md` § #2275.
 ! Registered-worker auth (#3663): local linked-worktree workers validate the independently stored assignment at `requireScmReady`; an inferred parent stamp is never exported as `DEFT_GITHUB_AUTH_MODE=host-gh` for those workers. Depth: `scm/github.md`.
 
 ## Development Process
@@ -187,6 +191,8 @@ Deft is installed in .deft/core/. Full guidelines: .deft/core/main.md
 ! `deft xbrief:preflight -- <path>` on `xbrief/active/` before code-writing; action-verb (`build`, `implement`, `ship`, `swarm`, `run agents`, `start agent`) (#810). Slash-command sessions inherit only that verb (`DEFT_SESSION_SLASH_VERB`); non-implement verbs (`/github-issue`, `/triage`, …) MUST NOT authorize implement/push/PR/merge/deploy (#1193) — `commands.md` / `contracts/intent-ceiling.md`.
 
 ## Human merge gate (#1193)
+
+! Merge-gate enforcement readiness (#1517): forge required-status-check detect+record at strategy start (`evaluateMergeGateEnforcementAtStrategyStart`); durable `.deft/merge-gate-enforcement/`; optional configure never empty-PUT/auto-promote; does not grant bot-merge. Depth: `.deft/core/scm/github.md`.
 
 ! When `plan.policy.requireHumanMerge` is true (default if `autoDeployOnMerge`), agents may open PRs, may not merge. Override: `deft policy:allow-bot-merge -- --confirm` or `DEFT_ALLOW_BOT_MERGE=1` — `commands.md` / `contracts/intent-ceiling.md`.
 
