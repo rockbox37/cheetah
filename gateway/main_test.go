@@ -129,8 +129,8 @@ func TestRateLimiterHeadersPresent(t *testing.T) {
 	if limit == "" {
 		t.Fatal("missing X-RateLimit-Limit header")
 	}
-	if limit != "100" {
-		t.Fatalf("expected X-RateLimit-Limit=100, got %s", limit)
+	if limit != "10" {
+		t.Fatalf("expected X-RateLimit-Limit=10 (free plan), got %s", limit)
 	}
 
 	remaining := resp.Header.Get("X-RateLimit-Remaining")
@@ -155,8 +155,33 @@ func TestCrawlRequiresAuth(t *testing.T) {
 	}
 }
 
-func TestExtractRequiresSchema(t *testing.T) {
+func TestExtractBlockedOnFreePlan(t *testing.T) {
 	app := testApp()
+
+	body := bytes.NewBufferString(`{"url": "https://example.com", "extract_schema": {"type": "object"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/extract", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "test-key-123")
+
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 403 (free plan), got %d, body: %s", resp.StatusCode, string(respBody))
+	}
+}
+
+func TestExtractRequiresSchema(t *testing.T) {
+	cfg := Config{
+		RedisURL: "localhost:6379",
+		APIKeys:  []string{"test-key-123"},
+		Port:     "3000",
+	}
+	queue := NewQueueClient(cfg.RedisURL)
+	proPlan := Plan{Name: "pro", CanExtract: true, MaxRatePerMinute: 100}
+	app := NewApp(cfg, queue, WithPlanLoader(&stubPlanLoader{plan: proPlan}))
 
 	body := bytes.NewBufferString(`{"url": "https://example.com"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/extract", body)
@@ -235,6 +260,7 @@ func TestCallerOwnerHashes(t *testing.T) {
 		c.Locals("api_key", "test-key-123")
 		return c.Next()
 	})
+	app.Use(OwnerHashMiddleware())
 	app.Get("/", func(c *fiber.Ctx) error {
 		owner := callerOwner(c)
 		if owner == "test-key-123" {
@@ -263,6 +289,7 @@ func TestCallerOwnerAnonymous(t *testing.T) {
 		c.Locals("api_key", "anonymous")
 		return c.Next()
 	})
+	app.Use(OwnerHashMiddleware())
 	app.Get("/", func(c *fiber.Ctx) error {
 		owner := callerOwner(c)
 		if owner != "anonymous" {

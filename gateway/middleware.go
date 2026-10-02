@@ -1,14 +1,32 @@
 package main
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
+
+func hashAPIKey(key string) string {
+	h := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(h[:])
+}
+
+func anonymizeIP(ip string) string {
+	if parts := strings.Split(ip, "."); len(parts) == 4 {
+		return parts[0] + "." + parts[1] + "." + parts[2] + ".0"
+	}
+	if i := strings.LastIndex(ip, ":"); i >= 0 {
+		return ip[:i] + ":0"
+	}
+	return "redacted"
+}
 
 type tokenBucket struct {
 	tokens     float64
@@ -17,83 +35,92 @@ type tokenBucket struct {
 	lastRefill time.Time
 }
 
-func (tb *tokenBucket) allow() bool {
-	now := time.Now()
-	elapsed := now.Sub(tb.lastRefill).Seconds()
-	tb.tokens += elapsed * tb.refillRate
-	if tb.tokens > tb.maxTokens {
-		tb.tokens = tb.maxTokens
-	}
-	tb.lastRefill = now
-
-	if tb.tokens >= 1 {
-		tb.tokens--
-		return true
-	}
-	return false
-}
-
 type rateLimiterStore struct {
-	mu      sync.Mutex
-	buckets map[string]*tokenBucket
+	mu          sync.Mutex
+	buckets     map[string]*tokenBucket
+	lastCleanup time.Time
 }
 
 func newRateLimiterStore() *rateLimiterStore {
 	return &rateLimiterStore{
-		buckets: make(map[string]*tokenBucket),
+		buckets:     make(map[string]*tokenBucket),
+		lastCleanup: time.Now(),
 	}
 }
 
-func (s *rateLimiterStore) getBucket(key string) *tokenBucket {
+func (s *rateLimiterStore) allowRequest(key string, maxRate int) (bool, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if b, ok := s.buckets[key]; ok {
-		return b
+	now := time.Now()
+
+	if now.Sub(s.lastCleanup) > 60*time.Second {
+		cutoff := now.Add(-5 * time.Minute)
+		for k, b := range s.buckets {
+			if b.lastRefill.Before(cutoff) {
+				delete(s.buckets, k)
+			}
+		}
+		s.lastCleanup = now
 	}
 
-	b := &tokenBucket{
-		tokens:     100,
-		maxTokens:  100,
-		refillRate: 100.0 / 60.0,
-		lastRefill: time.Now(),
+	rate := float64(maxRate)
+	b, ok := s.buckets[key]
+	if !ok {
+		b = &tokenBucket{
+			tokens:     rate,
+			maxTokens:  rate,
+			refillRate: rate / 60.0,
+			lastRefill: now,
+		}
+		s.buckets[key] = b
+	} else if b.maxTokens != rate {
+		b.maxTokens = rate
+		b.refillRate = rate / 60.0
 	}
-	s.buckets[key] = b
-	return b
+
+	elapsed := now.Sub(b.lastRefill).Seconds()
+	b.tokens += elapsed * b.refillRate
+	if b.tokens > b.maxTokens {
+		b.tokens = b.maxTokens
+	}
+	b.lastRefill = now
+
+	if b.tokens >= 1 {
+		b.tokens--
+		return true, int(b.tokens)
+	}
+	return false, 0
+}
+
+func OwnerHashMiddleware() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		key, _ := c.Locals("api_key").(string)
+		if key != "" && key != "anonymous" {
+			c.Locals("owner_hash", hashAPIKey(key))
+		}
+		return c.Next()
+	}
 }
 
 func RateLimiter() fiber.Handler {
 	store := newRateLimiterStore()
 
-	ticker := time.NewTicker(60 * time.Second)
-	go func() {
-		defer ticker.Stop()
-		for range ticker.C {
-			store.mu.Lock()
-			cutoff := time.Now().Add(-5 * time.Minute)
-			for k, b := range store.buckets {
-				if b.lastRefill.Before(cutoff) {
-					delete(store.buckets, k)
-				}
-			}
-			store.mu.Unlock()
-		}
-	}()
-
 	return func(c *fiber.Ctx) error {
-		key := c.Get("X-API-Key")
-		if key == "" {
-			key = c.IP()
+		ownerHash, _ := c.Locals("owner_hash").(string)
+		if ownerHash == "" {
+			ownerHash = c.IP()
 		}
 
-		bucket := store.getBucket(key)
+		plan, _ := c.Locals("plan").(Plan)
+		maxRate := plan.MaxRatePerMinute
+		if maxRate <= 0 {
+			maxRate = 10
+		}
 
-		store.mu.Lock()
-		allowed := bucket.allow()
-		remaining := int(bucket.tokens)
-		store.mu.Unlock()
+		allowed, remaining := store.allowRequest(ownerHash, maxRate)
 
-		c.Set("X-RateLimit-Limit", "100")
+		c.Set("X-RateLimit-Limit", strconv.Itoa(maxRate))
 		c.Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
 
 		if !allowed {
@@ -108,8 +135,6 @@ func RateLimiter() fiber.Handler {
 	}
 }
 
-// APIKeyAuth validates the X-API-Key header against the provided keys
-// using constant-time comparison to prevent timing attacks.
 func APIKeyAuth(validKeys []string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		key := c.Get("X-API-Key")
@@ -124,7 +149,6 @@ func APIKeyAuth(validKeys []string) fiber.Handler {
 		for _, vk := range validKeys {
 			if subtle.ConstantTimeCompare([]byte(key), []byte(vk)) == 1 {
 				valid = true
-				// Continue iterating to maintain constant time across all keys.
 			}
 		}
 
@@ -140,8 +164,6 @@ func APIKeyAuth(validKeys []string) fiber.Handler {
 	}
 }
 
-// RequestLogger logs each request with method, path, status, duration,
-// client IP, and a truncated API key for audit purposes.
 func RequestLogger() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		start := time.Now()
@@ -150,16 +172,15 @@ func RequestLogger() fiber.Handler {
 
 		duration := time.Since(start)
 
-		apiKey, _ := c.Locals("api_key").(string)
+		ownerHash, _ := c.Locals("owner_hash").(string)
 		keyDisplay := "-"
-		if apiKey != "" && apiKey != "anonymous" {
-			if len(apiKey) > 8 {
-				keyDisplay = apiKey[:8] + "..."
-			} else {
-				keyDisplay = apiKey + "..."
+		if ownerHash != "" {
+			keyDisplay = ownerHash[:8] + "..."
+		} else {
+			apiKey, _ := c.Locals("api_key").(string)
+			if apiKey == "anonymous" {
+				keyDisplay = "anonymous"
 			}
-		} else if apiKey == "anonymous" {
-			keyDisplay = "anonymous"
 		}
 
 		log.Printf("%s %s %d %s ip=%s key=%s",
@@ -167,10 +188,23 @@ func RequestLogger() fiber.Handler {
 			c.Path(),
 			c.Response().StatusCode(),
 			duration,
-			c.IP(),
+			anonymizeIP(c.IP()),
 			keyDisplay,
 		)
 
 		return err
+	}
+}
+
+func PlanMiddleware(loader PlanLoader) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		ownerHash, _ := c.Locals("owner_hash").(string)
+		plan, err := loader.LoadPlan(c.Context(), ownerHash)
+		if err != nil {
+			log.Printf("plan loader: falling back to free plan")
+			plan = FreePlan
+		}
+		c.Locals("plan", plan)
+		return c.Next()
 	}
 }
