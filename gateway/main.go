@@ -1,9 +1,7 @@
 package main
 
 import (
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log"
@@ -57,7 +55,11 @@ func main() {
 	log.Fatal(app.Listen(":" + cfg.Port))
 }
 
-func NewApp(cfg Config, queue *QueueClient) *fiber.App {
+func NewApp(cfg Config, queue *QueueClient, opts ...AppOption) *fiber.App {
+	deps := defaultDeps()
+	for _, o := range opts {
+		o(&deps)
+	}
 	app := fiber.New(fiber.Config{
 		AppName:      "Cheetah API Gateway",
 		ErrorHandler: customErrorHandler,
@@ -71,14 +73,18 @@ func NewApp(cfg Config, queue *QueueClient) *fiber.App {
 	if len(cfg.APIKeys) > 0 {
 		v1.Use(APIKeyAuth(cfg.APIKeys))
 	} else {
-		// When auth is disabled, tag every request as anonymous
-		// so the IDOR owner check still works.
 		v1.Use(func(c *fiber.Ctx) error {
 			c.Locals("api_key", "anonymous")
 			return c.Next()
 		})
 	}
+	v1.Use(OwnerHashMiddleware())
+	v1.Use(PlanMiddleware(deps.planLoader))
 	v1.Use(RateLimiter())
+	v1.Use(func(c *fiber.Ctx) error {
+		c.Locals("usage_reporter", deps.usageReporter)
+		return c.Next()
+	})
 
 	v1.Get("/health", handleHealthDiagnostic(queue))
 	v1.Post("/scrape", handleScrape(queue))
@@ -91,25 +97,27 @@ func NewApp(cfg Config, queue *QueueClient) *fiber.App {
 
 func customErrorHandler(c *fiber.Ctx, err error) error {
 	code := fiber.StatusInternalServerError
+	msg := "internal server error"
 	if e, ok := err.(*fiber.Error); ok {
 		code = e.Code
+		msg = e.Message
+	} else {
+		log.Printf("unhandled error: %v", err)
 	}
 	return c.Status(code).JSON(ErrorResponse{
 		Success: false,
-		Error:   err.Error(),
+		Error:   msg,
 	})
 }
 
 func callerOwner(c *fiber.Ctx) string {
-	key, _ := c.Locals("api_key").(string)
-	if key == "" || key == "anonymous" {
+	hash, _ := c.Locals("owner_hash").(string)
+	if hash == "" {
 		return "anonymous"
 	}
-	h := sha256.Sum256([]byte(key))
-	return hex.EncodeToString(h[:])
+	return hash
 }
 
-// validateFormat checks that format is one of the accepted values.
 func validateFormat(format string) bool {
 	return format == "markdown" || format == "html" || format == "text"
 }
@@ -192,6 +200,11 @@ func handleCrawl(queue *QueueClient) fiber.Handler {
 		if req.MaxPages <= 0 {
 			req.MaxPages = 10
 		}
+
+		plan, _ := c.Locals("plan").(Plan)
+		if plan.MaxCrawlPages > 0 && req.MaxPages > plan.MaxCrawlPages {
+			req.MaxPages = plan.MaxCrawlPages
+		}
 		if req.MaxPages > 1000 {
 			req.MaxPages = 1000
 		}
@@ -226,6 +239,14 @@ func handleCrawl(queue *QueueClient) fiber.Handler {
 
 func handleExtract(queue *QueueClient) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		plan, _ := c.Locals("plan").(Plan)
+		if !plan.CanExtract {
+			return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{
+				Success: false,
+				Error:   "extract is not available on your current plan",
+			})
+		}
+
 		var req ExtractRequest
 		if err := c.BodyParser(&req); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
@@ -248,7 +269,7 @@ func handleExtract(queue *QueueClient) fiber.Handler {
 			})
 		}
 
-		if req.ExtractSchema == nil || len(req.ExtractSchema) == 0 {
+		if len(req.ExtractSchema) == 0 {
 			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
 				Success: false,
 				Error:   "extract_schema is required",
@@ -262,11 +283,10 @@ func handleExtract(queue *QueueClient) fiber.Handler {
 			})
 		}
 
-		schema := req.ExtractSchema
 		scrapeReq := ScrapeRequest{
 			URL:           req.URL,
 			Format:        "markdown",
-			ExtractSchema: (*json.RawMessage)(&schema),
+			ExtractSchema: (*json.RawMessage)(&req.ExtractSchema),
 			WaitFor:       req.WaitFor,
 			Timeout:       req.Timeout,
 			Wait:          req.Wait,
@@ -314,7 +334,6 @@ func handleCrawlStatus(queue *QueueClient) fiber.Handler {
 			})
 		}
 
-		// IDOR check: verify the caller owns this job.
 		caller := callerOwner(c)
 		if subtle.ConstantTimeCompare([]byte(status.Owner), []byte(caller)) != 1 {
 			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
