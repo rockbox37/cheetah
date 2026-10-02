@@ -65,7 +65,7 @@ func NewApp(cfg Config, queue *QueueClient) *fiber.App {
 
 	app.Use(RequestLogger())
 
-	app.Get("/health", handleHealth(queue))
+	app.Get("/health", handleHealthLiveness(queue))
 
 	v1 := app.Group("/v1")
 	if len(cfg.APIKeys) > 0 {
@@ -80,6 +80,7 @@ func NewApp(cfg Config, queue *QueueClient) *fiber.App {
 	}
 	v1.Use(RateLimiter())
 
+	v1.Get("/health", handleHealthDiagnostic(queue))
 	v1.Post("/scrape", handleScrape(queue))
 	v1.Post("/crawl", handleCrawl(queue))
 	v1.Post("/extract", handleExtract(queue))
@@ -97,23 +98,6 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 		Success: false,
 		Error:   err.Error(),
 	})
-}
-
-func handleHealth(queue *QueueClient) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		status := "ok"
-		redisOK := true
-
-		if err := queue.Ping(c.Context()); err != nil {
-			status = "degraded"
-			redisOK = false
-		}
-
-		return c.JSON(fiber.Map{
-			"status": status,
-			"redis":  redisOK,
-		})
-	}
 }
 
 func callerOwner(c *fiber.Ctx) string {
