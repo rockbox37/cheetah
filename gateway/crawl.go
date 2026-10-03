@@ -194,7 +194,8 @@ func (cm *CrawlManager) fetchPage(ctx context.Context, rawURL string) crawlResul
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		result.Error = err.Error()
+		result.Error = "fetch failed"
+		log.Printf("crawl request setup %s: %v", rawURL, err)
 		return result
 	}
 	httpReq.Header.Set("User-Agent", crawlUserAgent)
@@ -223,7 +224,8 @@ func (cm *CrawlManager) fetchPage(ctx context.Context, rawURL string) crawlResul
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, crawlMaxBodyBytes))
 	if err != nil {
-		result.Error = err.Error()
+		result.Error = "fetch failed"
+		log.Printf("crawl body read %s: %v", rawURL, err)
 		return result
 	}
 
@@ -369,11 +371,7 @@ func (cm *CrawlManager) updateJobStatus(jobID string, status string, pagesComple
 }
 
 func (cm *CrawlManager) failJob(jobID string, reason string) {
-	jobStatus := JobStatus{
-		JobID:  jobID,
-		Status: "failed",
-	}
-	cm.queue.rdb.Set(context.Background(), jobKey(jobID), mustMarshal(jobStatus), jobTTL)
+	cm.updateJobStatus(jobID, "failed", 0)
 	log.Printf("crawl %s failed: %s", jobID, reason)
 }
 
