@@ -1,4 +1,4 @@
-import { chromium, type Browser, type BrowserContext } from "playwright";
+import { chromium, type Browser } from "playwright";
 import Redis from "ioredis";
 import TurndownService from "turndown";
 import { URL } from "node:url";
@@ -67,7 +67,6 @@ export async function validateURL(rawURL: string, resolvedIP?: string): Promise<
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error("SSRF: only http and https schemes are allowed");
   }
-  const hostname = parsed.hostname;
 
   if (!resolvedIP) {
     throw new Error("SSRF: resolved_ip is required");
@@ -78,9 +77,13 @@ export async function validateURL(rawURL: string, resolvedIP?: string): Promise<
 }
 
 export async function renderPage(
-  context: BrowserContext,
+  browser: Browser,
   url: string,
 ): Promise<{ html: string; title: string; description: string; language: string; statusCode: number }> {
+  const context = await browser.newContext({
+    userAgent: "Mozilla/5.0 (compatible; Cheetah/1.0; +https://cheetah.dev/bot)",
+    bypassCSP: true,
+  });
   const page = await context.newPage();
   try {
     const response = await page.goto(url, {
@@ -107,7 +110,7 @@ export async function renderPage(
 
     return { html, title, description, language, statusCode };
   } finally {
-    await page.close();
+    await context.close();
   }
 }
 
@@ -144,7 +147,7 @@ export function redactURL(rawURL: string): string {
 
 async function processJob(
   redis: Redis,
-  context: BrowserContext,
+  browser: Browser,
   job: JobMessage,
   entryId: string,
 ): Promise<void> {
@@ -153,7 +156,7 @@ async function processJob(
   try {
     await validateURL(job.url, job.resolved_ip);
 
-    const { html, title, description, language, statusCode } = await renderPage(context, job.url);
+    const { html, title, description, language, statusCode } = await renderPage(browser, job.url);
     const markdown = htmlToMarkdown(html);
 
     const payload: StatusPayload = {
@@ -184,7 +187,7 @@ async function processJob(
       results: [],
     };
     await redis.set(resultKey, JSON.stringify(payload), "EX", RESULT_TTL_SECONDS);
-    console.error(`[fail] job=${job.job_id} error=${err instanceof Error ? err.message : err}`);
+    console.error(`[fail] job=${job.job_id} url=${redactURL(job.url)} error=fetch failed`);
   }
 
   await redis.xack(STREAM, GROUP, entryId);
@@ -207,10 +210,6 @@ async function main(): Promise<void> {
   const browser: Browser = await chromium.launch({
     args: ["--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage"],
   });
-  const context = await browser.newContext({
-    userAgent: "Mozilla/5.0 (compatible; Cheetah/1.0; +https://cheetah.dev/bot)",
-    bypassCSP: true,
-  });
 
   let shuttingDown = false;
   const inflight = new Set<Promise<void>>();
@@ -220,7 +219,6 @@ async function main(): Promise<void> {
     shuttingDown = true;
     console.log("shutting down, waiting for in-flight jobs...");
     await Promise.allSettled(inflight);
-    await context.close();
     await browser.close();
     redis.disconnect();
     console.log("shutdown complete");
@@ -266,7 +264,7 @@ async function main(): Promise<void> {
         continue;
       }
 
-      const task = processJob(redis, context, job, entryId)
+      const task = processJob(redis, browser, job, entryId)
         .catch((err) => console.error(`[drop] job=${job.job_id} err=${err instanceof Error ? err.message : String(err)}`))
         .finally(() => { inflight.delete(task); });
       inflight.add(task);

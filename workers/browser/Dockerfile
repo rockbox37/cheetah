@@ -13,4 +13,6 @@ ENV NODE_ENV=production
 ENV STREAM=browser_jobs
 ENV GROUP=browser-workers
 
+USER pwuser
+
 CMD ["node", "dist/index.js"]
