@@ -144,6 +144,7 @@ func IsTierAllowed(tier Tier, allowed []string) bool {
 func LogRouteDecision(jobID string, rawURL string, decision RouteDecision) {
 	redacted := rawURL
 	if parsed, err := url.Parse(rawURL); err == nil {
+		parsed.User = nil
 		parsed.RawQuery = ""
 		parsed.Fragment = ""
 		redacted = parsed.String()

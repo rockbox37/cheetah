@@ -269,6 +269,8 @@ func handleCrawl(queue *QueueClient) fiber.Handler {
 			})
 		}
 
+		LogRouteDecision(jobID, req.URL, decision)
+
 		return c.Status(fiber.StatusAccepted).JSON(CrawlResponse{
 			Success: true,
 			JobID:   jobID,
@@ -353,6 +355,8 @@ func handleExtract(queue *QueueClient) fiber.Handler {
 				Error:   "failed to enqueue job",
 			})
 		}
+
+		LogRouteDecision(jobID, req.URL, decision)
 
 		return c.Status(fiber.StatusAccepted).JSON(EnqueueResponse{
 			Success: true,
