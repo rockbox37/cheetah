@@ -158,8 +158,19 @@ func handleScrape(queue *QueueClient) fiber.Handler {
 			})
 		}
 
+		decision := ClassifyURL(req.URL)
+
+		plan, _ := c.Locals("plan").(Plan)
+		if !IsTierAllowed(decision.Tier, plan.AllowedTiers) {
+			return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{
+				Success: false,
+				Error:   "this URL requires the " + string(decision.Tier) + " tier, upgrade your plan",
+			})
+		}
+
 		owner := callerOwner(c)
-		jobID, err := queue.EnqueueScrape(c.Context(), req, owner)
+		stream := StreamForTier(decision.Tier)
+		jobID, err := queue.EnqueueScrape(c.Context(), req, owner, stream)
 		if err != nil {
 			log.Printf("enqueue scrape error: %v", err)
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
@@ -167,6 +178,8 @@ func handleScrape(queue *QueueClient) fiber.Handler {
 				Error:   "failed to enqueue job",
 			})
 		}
+
+		LogRouteDecision(jobID, req.URL, decision)
 
 		return c.Status(fiber.StatusAccepted).JSON(EnqueueResponse{
 			Success: true,
