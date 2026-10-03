@@ -1,7 +1,6 @@
 import { chromium, type Browser, type BrowserContext } from "playwright";
 import Redis from "ioredis";
 import TurndownService from "turndown";
-import { resolve4 } from "node:dns/promises";
 import { URL } from "node:url";
 
 const STREAM = process.env.STREAM ?? "browser_jobs";
@@ -65,26 +64,16 @@ export function isPrivateIP(ip: string): boolean {
 
 export async function validateURL(rawURL: string, resolvedIP?: string): Promise<void> {
   const parsed = new URL(rawURL);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("SSRF: only http and https schemes are allowed");
+  }
   const hostname = parsed.hostname;
 
-  if (resolvedIP) {
-    if (isPrivateIP(resolvedIP)) {
-      throw new Error("SSRF: resolved IP is private/reserved");
-    }
-    return;
+  if (!resolvedIP) {
+    throw new Error("SSRF: resolved_ip is required");
   }
-
-  let addresses: string[];
-  try {
-    addresses = await resolve4(hostname);
-  } catch {
-    throw new Error("SSRF: DNS resolution failed");
-  }
-
-  for (const addr of addresses) {
-    if (isPrivateIP(addr)) {
-      throw new Error("SSRF: hostname resolves to private/reserved IP");
-    }
+  if (isPrivateIP(resolvedIP)) {
+    throw new Error("SSRF: resolved IP is private/reserved");
   }
 }
 
@@ -269,6 +258,7 @@ async function main(): Promise<void> {
     }
 
     for (const [entryId, fields] of entries) {
+      if (shuttingDown) break;
       const job = parseJob(fields);
       if (!job) {
         console.warn(`job missing required fields, skipping: ${entryId}`);
@@ -276,9 +266,9 @@ async function main(): Promise<void> {
         continue;
       }
 
-      const task = processJob(redis, context, job, entryId).finally(() => {
-        inflight.delete(task);
-      });
+      const task = processJob(redis, context, job, entryId)
+        .catch((err) => console.error(`[drop] job=${job.job_id} err=${err instanceof Error ? err.message : String(err)}`))
+        .finally(() => { inflight.delete(task); });
       inflight.add(task);
     }
   }

@@ -67,6 +67,18 @@ describe("validateURL", () => {
   it("rejects invalid URL", async () => {
     await expect(validateURL("not-a-url")).rejects.toThrow();
   });
+
+  it("rejects file:// scheme", async () => {
+    await expect(validateURL("file:///etc/passwd", "93.184.216.34")).rejects.toThrow("scheme");
+  });
+
+  it("rejects data: scheme", async () => {
+    await expect(validateURL("data:text/html,<h1>hi</h1>", "1.2.3.4")).rejects.toThrow("scheme");
+  });
+
+  it("requires resolved_ip", async () => {
+    await expect(validateURL("https://example.com")).rejects.toThrow("resolved_ip is required");
+  });
 });
 
 describe("parseJob", () => {
