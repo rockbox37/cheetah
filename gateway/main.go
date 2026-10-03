@@ -158,8 +158,19 @@ func handleScrape(queue *QueueClient) fiber.Handler {
 			})
 		}
 
+		decision := ClassifyURL(req.URL)
+
+		plan, _ := c.Locals("plan").(Plan)
+		if !IsTierAllowed(decision.Tier, plan.AllowedTiers) {
+			return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{
+				Success: false,
+				Error:   "this URL requires the " + string(decision.Tier) + " tier, upgrade your plan",
+			})
+		}
+
 		owner := callerOwner(c)
-		jobID, err := queue.EnqueueScrape(c.Context(), req, owner)
+		stream := StreamForTier(decision.Tier)
+		jobID, err := queue.EnqueueScrape(c.Context(), req, owner, stream)
 		if err != nil {
 			log.Printf("enqueue scrape error: %v", err)
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
@@ -167,6 +178,8 @@ func handleScrape(queue *QueueClient) fiber.Handler {
 				Error:   "failed to enqueue job",
 			})
 		}
+
+		LogRouteDecision(jobID, req.URL, decision)
 
 		return c.Status(fiber.StatusAccepted).JSON(EnqueueResponse{
 			Success: true,
@@ -237,6 +250,15 @@ func handleCrawl(queue *QueueClient) fiber.Handler {
 			})
 		}
 
+		decision := ClassifyURL(req.URL)
+
+		if !IsTierAllowed(decision.Tier, plan.AllowedTiers) {
+			return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{
+				Success: false,
+				Error:   "this URL requires the " + string(decision.Tier) + " tier, upgrade your plan",
+			})
+		}
+
 		owner := callerOwner(c)
 		jobID, err := queue.EnqueueCrawl(c.Context(), req, owner)
 		if err != nil {
@@ -246,6 +268,8 @@ func handleCrawl(queue *QueueClient) fiber.Handler {
 				Error:   "failed to enqueue job",
 			})
 		}
+
+		LogRouteDecision(jobID, req.URL, decision)
 
 		return c.Status(fiber.StatusAccepted).JSON(CrawlResponse{
 			Success: true,
@@ -302,6 +326,15 @@ func handleExtract(queue *QueueClient) fiber.Handler {
 			})
 		}
 
+		decision := ClassifyURL(req.URL)
+
+		if !IsTierAllowed(decision.Tier, plan.AllowedTiers) {
+			return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{
+				Success: false,
+				Error:   "this URL requires the " + string(decision.Tier) + " tier, upgrade your plan",
+			})
+		}
+
 		scrapeReq := ScrapeRequest{
 			URL:           req.URL,
 			Format:        "markdown",
@@ -313,7 +346,8 @@ func handleExtract(queue *QueueClient) fiber.Handler {
 		}
 
 		owner := callerOwner(c)
-		jobID, err := queue.EnqueueScrape(c.Context(), scrapeReq, owner)
+		stream := StreamForTier(decision.Tier)
+		jobID, err := queue.EnqueueScrape(c.Context(), scrapeReq, owner, stream)
 		if err != nil {
 			log.Printf("enqueue extract error: %v", err)
 			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
@@ -321,6 +355,8 @@ func handleExtract(queue *QueueClient) fiber.Handler {
 				Error:   "failed to enqueue job",
 			})
 		}
+
+		LogRouteDecision(jobID, req.URL, decision)
 
 		return c.Status(fiber.StatusAccepted).JSON(EnqueueResponse{
 			Success: true,

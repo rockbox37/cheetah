@@ -46,7 +46,7 @@ func (q *QueueClient) Close() error {
 	return q.rdb.Close()
 }
 
-func (q *QueueClient) EnqueueScrape(ctx context.Context, req ScrapeRequest, owner string) (string, error) {
+func (q *QueueClient) EnqueueScrape(ctx context.Context, req ScrapeRequest, owner string, stream ...string) (string, error) {
 	jobID := uuid.New().String()
 
 	payload, err := json.Marshal(req)
@@ -54,8 +54,13 @@ func (q *QueueClient) EnqueueScrape(ctx context.Context, req ScrapeRequest, owne
 		return "", fmt.Errorf("marshal scrape request: %w", err)
 	}
 
+	targetStream := "scrape_jobs"
+	if len(stream) > 0 && stream[0] != "" {
+		targetStream = stream[0]
+	}
+
 	err = q.rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: "scrape_jobs",
+		Stream: targetStream,
 		MaxLen: streamMaxLen,
 		Approx: true,
 		Values: map[string]interface{}{
