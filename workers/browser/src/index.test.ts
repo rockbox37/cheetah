@@ -86,6 +86,18 @@ describe("isPrivateIP", () => {
   it("allows public IPv6", () => {
     expect(isPrivateIP("2001:db8::1")).toBe(false);
   });
+
+  it("blocks non-canonical IPv6 loopback (expanded form)", () => {
+    expect(isPrivateIP("0:0:0:0:0:0:0:1")).toBe(true);
+  });
+
+  it("blocks non-canonical IPv4-mapped IPv6 (expanded form)", () => {
+    expect(isPrivateIP("0:0:0:0:0:ffff:7f00:1")).toBe(true);
+  });
+
+  it("allows unrecognized public IPv6", () => {
+    expect(isPrivateIP("::2")).toBe(false);
+  });
 });
 
 describe("hostnameIsPrivateIP", () => {

@@ -12,6 +12,8 @@ const CONCURRENCY = parseInt(process.env.CONCURRENCY ?? "5", 10);
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const PAGE_TIMEOUT_MS = 30_000;
 const RESULT_TTL_SECONDS = 3600;
+const DNS_CACHE_TTL_MS = 5 * 60 * 1000;
+const dnsCache = new Map<string, { promise: Promise<boolean>; expiresAt: number }>();
 
 interface JobMessage {
   job_id: string;
@@ -51,7 +53,13 @@ const turndown = new TurndownService({
 
 export function isPrivateIP(ip: string): boolean {
   if (ip.includes(":")) {
-    const lower = ip.toLowerCase();
+    let canonical: string;
+    try {
+      canonical = new URL(`http://[${ip}]`).hostname.slice(1, -1);
+    } catch {
+      return true;
+    }
+    const lower = canonical.toLowerCase();
     if (lower === "::1" || lower === "::") return true;
     if (lower.startsWith("fe80:") || lower.startsWith("fc") || lower.startsWith("fd")) return true;
     const v4mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
@@ -114,7 +122,6 @@ export async function renderPage(
   });
   const page = await context.newPage();
   try {
-    const dnsCache = new Map<string, Promise<boolean>>();
     await context.route("**/*", async (route) => {
       const reqURL = route.request().url();
       try {
@@ -125,15 +132,21 @@ export async function renderPage(
         }
         const host = reqParsed.hostname.replace(/^\[|\]$/g, "");
         if (!(/^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(":"))) {
-          let check = dnsCache.get(host);
-          if (!check) {
-            check = Promise.all([
+          const now = Date.now();
+          let entry = dnsCache.get(host);
+          if (!entry || entry.expiresAt < now) {
+            const promise = Promise.all([
               dns.resolve4(host).catch(() => [] as string[]),
               dns.resolve6(host).catch(() => [] as string[]),
-            ]).then(([v4, v6]) => [...v4, ...v6].some(isPrivateIP));
-            dnsCache.set(host, check);
+            ]).then(([v4, v6]) => {
+              const all = [...v4, ...v6];
+              if (all.length === 0) return true;
+              return all.some(isPrivateIP);
+            });
+            entry = { promise, expiresAt: now + DNS_CACHE_TTL_MS };
+            dnsCache.set(host, entry);
           }
-          if (await check) {
+          if (await entry.promise) {
             await route.abort("blockedbyclient");
             return;
           }
@@ -146,7 +159,7 @@ export async function renderPage(
     });
 
     const response = await page.goto(url, {
-      waitUntil: "networkidle",
+      waitUntil: "load",
       timeout: PAGE_TIMEOUT_MS,
     });
 
@@ -210,6 +223,7 @@ async function processJob(
   job: JobMessage,
   entryId: string,
 ): Promise<void> {
+  const safeId = job.job_id.replace(/[\x00-\x1f\x7f]/g, "");
   const resultKey = `${RESULTS_PREFIX}:${job.job_id}`;
 
   try {
@@ -243,7 +257,7 @@ async function processJob(
     };
 
     await redis.set(resultKey, JSON.stringify(payload), "EX", RESULT_TTL_SECONDS);
-    console.log(`[ok] job=${job.job_id} url=${redactURL(job.url)} status=${statusCode}`);
+    console.log(`[ok] job=${safeId} url=${redactURL(job.url)} status=${result.statusCode}`);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     const tag = errMsg.startsWith("SSRF") ? "ssrf_blocked" : "fetch_failed";
@@ -257,9 +271,9 @@ async function processJob(
     try {
       await redis.set(resultKey, JSON.stringify(payload), "EX", RESULT_TTL_SECONDS);
     } catch {
-      console.error(`[fail] could not write failure result for job=${job.job_id}`);
+      console.error(`[fail] could not write failure result for job=${safeId}`);
     }
-    console.error(`[fail] job=${job.job_id} url=${redactURL(job.url)} error=${tag}`);
+    console.error(`[fail] job=${safeId} url=${redactURL(job.url)} error=${tag}`);
   } finally {
     await redis.xack(STREAM, GROUP, entryId).catch(() => {});
   }
@@ -305,14 +319,20 @@ async function main(): Promise<void> {
     if (claimed && (claimed as any)[1]?.length > 0) {
       const entries = (claimed as any)[1] as [string, string[]][];
       console.log(`recovered ${entries.length} orphaned pending entries`);
+      const active = new Set<Promise<void>>();
       for (const [entryId, fields] of entries) {
+        if (active.size >= CONCURRENCY) await Promise.race(active);
         const job = parseJob(fields);
         if (job) {
-          await processJob(redis, browser, job, entryId);
+          const t = processJob(redis, browser, job, entryId)
+            .catch(() => {})
+            .finally(() => { active.delete(t); });
+          active.add(t);
         } else {
           await redis.xack(STREAM, GROUP, entryId);
         }
       }
+      await Promise.allSettled(active);
     }
   } catch {
     // XAUTOCLAIM not supported or no pending entries
