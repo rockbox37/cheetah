@@ -202,12 +202,18 @@ func (cm *CrawlManager) fetchPage(ctx context.Context, rawURL string) crawlResul
 
 	resp, err := cm.httpClient.Do(httpReq)
 	if err != nil {
-		result.Error = err.Error()
+		result.Error = "fetch failed"
+		log.Printf("crawl fetch %s: %v", rawURL, err)
 		return result
 	}
 	defer resp.Body.Close()
 
 	result.StatusCode = resp.StatusCode
+
+	if resp.StatusCode >= 400 {
+		result.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		return result
+	}
 
 	ct := resp.Header.Get("Content-Type")
 	if ct != "" && !strings.Contains(ct, "text/html") && !strings.Contains(ct, "application/xhtml") {
@@ -326,7 +332,6 @@ func normalizeURL(rawURL string) string {
 		return rawURL
 	}
 	parsed.Fragment = ""
-	parsed.RawQuery = ""
 	return strings.TrimRight(parsed.String(), "/")
 }
 

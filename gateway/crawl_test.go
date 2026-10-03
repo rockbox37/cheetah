@@ -139,7 +139,7 @@ func TestNormalizeURL(t *testing.T) {
 		want  string
 	}{
 		{"https://example.com/page#section", "https://example.com/page"},
-		{"https://example.com/page?q=1", "https://example.com/page"},
+		{"https://example.com/page?q=1", "https://example.com/page?q=1"},
 		{"https://example.com/path/", "https://example.com/path"},
 		{"https://example.com", "https://example.com"},
 	}
@@ -502,5 +502,39 @@ func TestCrawlPagesCompletedConsistent(t *testing.T) {
 	if status.PagesCompleted != status.PagesTotal {
 		t.Fatalf("PagesCompleted (%d) should equal PagesTotal (%d) on finalization",
 			status.PagesCompleted, status.PagesTotal)
+	}
+}
+func TestFetchPageReturnsErrorForHTTP404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	cm := testCrawlManager(srv.Client())
+	result := cm.fetchPage(context.Background(), srv.URL+"/missing")
+
+	if result.Error == "" {
+		t.Fatal("expected error for 404 response")
+	}
+	if result.StatusCode != 404 {
+		t.Fatalf("expected status 404, got %d", result.StatusCode)
+	}
+	if result.Content != "" {
+		t.Fatal("expected no content for error responses")
+	}
+}
+
+func TestFetchPageSanitizesErrors(t *testing.T) {
+	cm := &CrawlManager{
+		httpClient: newCrawlHTTPClient(),
+		queue:      NewQueueClient("localhost:6379"),
+	}
+	result := cm.fetchPage(context.Background(), "http://192.0.2.1:1/unreachable")
+
+	if result.Error == "" {
+		t.Fatal("expected error for unreachable host")
+	}
+	if result.Error != "fetch failed" {
+		t.Fatalf("expected sanitized error \"fetch failed\", got %q", result.Error)
 	}
 }
