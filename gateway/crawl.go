@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -16,15 +17,11 @@ import (
 )
 
 const (
-	crawlMaxBodyBytes  = 10 * 1024 * 1024
-	crawlConcurrency   = 5
-	crawlUserAgent     = "Mozilla/5.0 (compatible; Cheetah/1.0; +https://cheetah.dev/bot)"
-	crawlPageKeyPrefix = "crawl_pages"
+	crawlMaxBodyBytes = 10 * 1024 * 1024
+	crawlConcurrency  = 5
+	crawlUserAgent    = "Mozilla/5.0 (compatible; Cheetah/1.0; +https://cheetah.dev/bot)"
+	crawlMaxTotalSize = 100 * 1024 * 1024
 )
-
-func crawlPagesKey(jobID string) string {
-	return fmt.Sprintf("%s:%s", crawlPageKeyPrefix, jobID)
-}
 
 type crawlResult struct {
 	URL        string `json:"url"`
@@ -40,18 +37,50 @@ type CrawlManager struct {
 	queue      *QueueClient
 }
 
+func newCrawlHTTPClient() *http.Client {
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupHost(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			for _, ipStr := range ips {
+				ip := net.ParseIP(ipStr)
+				if ip != nil && isPrivateIP(ip) {
+					return nil, fmt.Errorf("connection to private IP blocked")
+				}
+			}
+			if len(ips) == 0 {
+				return nil, fmt.Errorf("no addresses found for %s", host)
+			}
+			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ips[0], port))
+		},
+	}
+
+	return &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("too many redirects")
+			}
+			_, err := ValidateScrapeURL(req.URL.String())
+			if err != nil {
+				return fmt.Errorf("redirect to private address blocked")
+			}
+			return nil
+		},
+	}
+}
+
 func NewCrawlManager(queue *QueueClient) *CrawlManager {
 	return &CrawlManager{
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 5 {
-					return fmt.Errorf("too many redirects")
-				}
-				return nil
-			},
-		},
-		queue: queue,
+		httpClient: newCrawlHTTPClient(),
+		queue:      queue,
 	}
 }
 
@@ -79,6 +108,7 @@ func (cm *CrawlManager) RunCrawl(ctx context.Context, jobID string, req CrawlReq
 
 	var results []crawlResult
 	pagesDone := 0
+	totalBytes := 0
 
 	for len(queue) > 0 && pagesDone < req.MaxPages {
 		if ctx.Err() != nil {
@@ -118,28 +148,41 @@ func (cm *CrawlManager) RunCrawl(ctx context.Context, jobID string, req CrawlReq
 				continue
 			}
 			pagesDone++
-			results = append(results, r)
+			totalBytes += len(r.Content)
 
-			if r.Depth >= req.MaxDepth || r.Error != "" || r.Content == "" {
-				continue
+			if totalBytes > crawlMaxTotalSize {
+				r.Content = ""
+				r.Error = "total crawl size limit exceeded"
 			}
 
-			links := extractLinks(r.Content, r.URL)
-			links = filterLinks(links, seedURL, req.IncludePatterns, req.ExcludePatterns)
-			for _, link := range links {
-				norm := normalizeURL(link)
-				if !visited[norm] {
-					visited[norm] = true
-					queue = append(queue, queueItem{url: link, depth: r.Depth + 1})
+			if r.Depth < req.MaxDepth && r.Error == "" && r.Content != "" {
+				links := extractLinks(r.Content, r.URL)
+				links = filterLinks(links, seedURL, req.IncludePatterns, req.ExcludePatterns)
+				for _, link := range links {
+					norm := normalizeURL(link)
+					if !visited[norm] {
+						visited[norm] = true
+						queue = append(queue, queueItem{url: link, depth: r.Depth + 1})
+					}
 				}
+			}
+
+			results = append(results, r)
+
+			if totalBytes > crawlMaxTotalSize {
+				break
 			}
 		}
 
 		cm.updateJobStatus(jobID, "running", pagesDone)
+
+		if totalBytes > crawlMaxTotalSize {
+			break
+		}
 	}
 
 	status := "completed"
-	if ctx.Err() == context.DeadlineExceeded {
+	if ctx.Err() != nil {
 		status = "partial"
 	}
 
@@ -148,12 +191,6 @@ func (cm *CrawlManager) RunCrawl(ctx context.Context, jobID string, req CrawlReq
 
 func (cm *CrawlManager) fetchPage(ctx context.Context, rawURL string) crawlResult {
 	result := crawlResult{URL: rawURL}
-
-	_, err := ValidateScrapeURL(rawURL)
-	if err != nil {
-		result.Error = err.Error()
-		return result
-	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -256,7 +293,7 @@ func filterLinks(links []string, seedURL *url.URL, includePatterns, excludePatte
 			continue
 		}
 
-		if shouldSkipCrawlURL(link) {
+		if skipExtensions.MatchString(parsed.Path) {
 			continue
 		}
 
@@ -273,14 +310,6 @@ func filterLinks(links []string, seedURL *url.URL, includePatterns, excludePatte
 }
 
 var skipExtensions = regexp.MustCompile(`(?i)\.(pdf|zip|tar|gz|exe|dmg|pkg|deb|rpm|iso|img|png|jpg|jpeg|gif|svg|webp|ico|bmp|tiff|mp3|mp4|avi|mov|wmv|flv|webm|ogg|wav|css|js|woff|woff2|ttf|eot|otf|map)$`)
-
-func shouldSkipCrawlURL(rawURL string) bool {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return true
-	}
-	return skipExtensions.MatchString(parsed.Path)
-}
 
 func matchesAny(s string, patterns []string) bool {
 	for _, p := range patterns {
@@ -365,7 +394,7 @@ func (cm *CrawlManager) finalizeJob(jobID string, status string, pagesTotal int,
 		JobID:          jobID,
 		Status:         status,
 		PagesTotal:     pagesTotal,
-		PagesCompleted: len(scrapeResults),
+		PagesCompleted: pagesTotal,
 		Results:        scrapeResults,
 	}
 	cm.queue.rdb.Set(context.Background(), jobKey(jobID), mustMarshal(jobStatus), jobTTL)

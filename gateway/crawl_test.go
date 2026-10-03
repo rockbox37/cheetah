@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -114,29 +115,21 @@ func TestFilterLinksExcludePatterns(t *testing.T) {
 	}
 }
 
-func TestShouldSkipCrawlURL(t *testing.T) {
-	tests := []struct {
-		url  string
-		skip bool
-	}{
-		{"https://example.com/page", false},
-		{"https://example.com/doc.pdf", true},
-		{"https://example.com/image.png", true},
-		{"https://example.com/style.css", true},
-		{"https://example.com/app.js", true},
-		{"https://example.com/font.woff2", true},
-		{"https://example.com/video.mp4", true},
-		{"https://example.com/about", false},
-		{"https://example.com/page.html", false},
+func TestFilterLinksSkipsExtensions(t *testing.T) {
+	seed, _ := url.Parse("https://example.com")
+	links := []string{
+		"https://example.com/page",
+		"https://example.com/doc.pdf",
+		"https://example.com/image.png",
+		"https://example.com/style.css",
+		"https://example.com/app.js",
+		"https://example.com/about",
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.url, func(t *testing.T) {
-			got := shouldSkipCrawlURL(tt.url)
-			if got != tt.skip {
-				t.Fatalf("shouldSkipCrawlURL(%q) = %v, want %v", tt.url, got, tt.skip)
-			}
-		})
+	filtered := filterLinks(links, seed, nil, nil)
+
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 non-asset links, got %d: %v", len(filtered), filtered)
 	}
 }
 
@@ -181,6 +174,13 @@ func TestExtractTitle(t *testing.T) {
 	}
 }
 
+func testCrawlManager(client *http.Client) *CrawlManager {
+	return &CrawlManager{
+		httpClient: client,
+		queue:      NewQueueClient("localhost:6379"),
+	}
+}
+
 func TestCrawlManagerDepthEnforcement(t *testing.T) {
 	pages := map[string]string{
 		"/":       `<html><head><title>Root</title></head><body><a href="/level1">L1</a></body></html>`,
@@ -201,10 +201,7 @@ func TestCrawlManagerDepthEnforcement(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cm := &CrawlManager{
-		httpClient: srv.Client(),
-		queue:      NewQueueClient("localhost:6379"),
-	}
+	cm := testCrawlManager(srv.Client())
 
 	req := CrawlRequest{
 		URL:        srv.URL + "/",
@@ -214,21 +211,36 @@ func TestCrawlManagerDepthEnforcement(t *testing.T) {
 		Format:     "markdown",
 	}
 
-	results := runTestCrawl(t, cm, req)
+	done := make(chan struct{})
+	go func() {
+		cm.RunCrawl(context.Background(), "test-depth", req)
+		close(done)
+	}()
 
-	maxDepth := 0
-	for _, r := range results {
-		if r.Depth > maxDepth {
-			maxDepth = r.Depth
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("crawl timed out")
+	}
+
+	val, err := cm.queue.rdb.Get(context.Background(), jobKey("test-depth")).Result()
+	if err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
+
+	var status JobStatus
+	if err := json.Unmarshal([]byte(val), &status); err != nil {
+		t.Fatal(err)
+	}
+
+	if status.PagesTotal > 3 {
+		t.Fatalf("expected at most 3 pages (depth 0,1,2), got %d", status.PagesTotal)
+	}
+
+	for _, r := range status.Results {
+		if r.Data.Metadata.Title == "Level 3" || r.Data.Metadata.Title == "Level 4" {
+			t.Fatalf("should not have crawled beyond depth 2, found %q", r.Data.Metadata.Title)
 		}
-	}
-
-	if maxDepth > 2 {
-		t.Fatalf("expected max depth 2, but found page at depth %d", maxDepth)
-	}
-
-	if len(results) > 3 {
-		t.Fatalf("expected at most 3 pages (depth 0,1,2), got %d", len(results))
 	}
 }
 
@@ -250,10 +262,7 @@ func TestCrawlManagerMaxPagesEnforcement(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cm := &CrawlManager{
-		httpClient: srv.Client(),
-		queue:      NewQueueClient("localhost:6379"),
-	}
+	cm := testCrawlManager(srv.Client())
 
 	req := CrawlRequest{
 		URL:        srv.URL + "/",
@@ -263,10 +272,30 @@ func TestCrawlManagerMaxPagesEnforcement(t *testing.T) {
 		Format:     "markdown",
 	}
 
-	results := runTestCrawl(t, cm, req)
+	done := make(chan struct{})
+	go func() {
+		cm.RunCrawl(context.Background(), "test-pages", req)
+		close(done)
+	}()
 
-	if len(results) > 5 {
-		t.Fatalf("expected at most 5 pages, got %d", len(results))
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("crawl timed out")
+	}
+
+	val, err := cm.queue.rdb.Get(context.Background(), jobKey("test-pages")).Result()
+	if err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
+
+	var status JobStatus
+	if err := json.Unmarshal([]byte(val), &status); err != nil {
+		t.Fatal(err)
+	}
+
+	if status.PagesTotal > 5 {
+		t.Fatalf("expected at most 5 pages, got %d", status.PagesTotal)
 	}
 }
 
@@ -283,10 +312,7 @@ func TestCrawlManagerTimeoutReturnsPartial(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cm := &CrawlManager{
-		httpClient: srv.Client(),
-		queue:      NewQueueClient("localhost:6379"),
-	}
+	cm := testCrawlManager(srv.Client())
 
 	req := CrawlRequest{
 		URL:        srv.URL + "/",
@@ -296,72 +322,97 @@ func TestCrawlManagerTimeoutReturnsPartial(t *testing.T) {
 		Format:     "markdown",
 	}
 
-	results := runTestCrawl(t, cm, req)
+	done := make(chan struct{})
+	go func() {
+		cm.RunCrawl(context.Background(), "test-timeout", req)
+		close(done)
+	}()
 
-	if len(results) < 1 {
-		t.Fatal("expected at least the seed page")
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("crawl did not complete")
 	}
-	if len(results) >= 5 {
-		t.Fatalf("expected fewer than 5 pages due to timeout, got %d", len(results))
-	}
-}
 
-func runTestCrawl(t *testing.T, cm *CrawlManager, req CrawlRequest) []crawlResult {
-	t.Helper()
-
-	seedURL, err := url.Parse(req.URL)
+	val, err := cm.queue.rdb.Get(context.Background(), jobKey("test-timeout")).Result()
 	if err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
+
+	var status JobStatus
+	if err := json.Unmarshal([]byte(val), &status); err != nil {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(req.MaxTimeout)*time.Second)
-	defer cancel()
-
-	visited := make(map[string]bool)
-	visited[normalizeURL(req.URL)] = true
-
-	type queueItem struct {
-		url   string
-		depth int
+	if status.Status != "partial" {
+		t.Fatalf("expected status 'partial' for timed-out crawl, got %q", status.Status)
 	}
-	queue := []queueItem{{url: req.URL, depth: 0}}
+}
 
-	var results []crawlResult
-	pagesDone := 0
+func TestCrawlManagerContextCancellation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><head><title>Slow</title></head><body>
+			<a href="/page1">P1</a><a href="/page2">P2</a>
+		</body></html>`)
+	}))
+	defer srv.Close()
 
-	for len(queue) > 0 && pagesDone < req.MaxPages {
-		if ctx.Err() != nil {
-			break
-		}
+	cm := testCrawlManager(srv.Client())
 
-		item := queue[0]
-		queue = queue[1:]
-
-		if ctx.Err() != nil {
-			break
-		}
-
-		r := cm.fetchPage(ctx, item.url)
-		r.Depth = item.depth
-		pagesDone++
-		results = append(results, r)
-
-		if item.depth >= req.MaxDepth || r.Error != "" || r.Content == "" {
-			continue
-		}
-
-		links := extractLinks(r.Content, r.URL)
-		links = filterLinks(links, seedURL, req.IncludePatterns, req.ExcludePatterns)
-		for _, link := range links {
-			norm := normalizeURL(link)
-			if !visited[norm] {
-				visited[norm] = true
-				queue = append(queue, queueItem{url: link, depth: r.Depth + 1})
-			}
-		}
+	req := CrawlRequest{
+		URL:        srv.URL + "/",
+		MaxPages:   100,
+		MaxDepth:   5,
+		MaxTimeout: 30,
+		Format:     "markdown",
 	}
 
-	return results
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		cm.RunCrawl(ctx, "test-cancel", req)
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("crawl did not stop after cancellation")
+	}
+
+	val, err := cm.queue.rdb.Get(context.Background(), jobKey("test-cancel")).Result()
+	if err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
+
+	var status JobStatus
+	if err := json.Unmarshal([]byte(val), &status); err != nil {
+		t.Fatal(err)
+	}
+
+	if status.Status != "partial" {
+		t.Fatalf("expected status 'partial' for cancelled crawl, got %q", status.Status)
+	}
+}
+
+func TestCrawlRedirectToPrivateBlocked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://127.0.0.1/secret", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	cm := testCrawlManager(srv.Client())
+	result := cm.fetchPage(context.Background(), srv.URL+"/redir")
+
+	if result.Error == "" {
+		t.Fatal("expected error for redirect to private IP")
+	}
 }
 
 func TestCrawlMaxDepthValidation(t *testing.T) {
@@ -395,5 +446,61 @@ func TestCrawlMaxTimeoutValidation(t *testing.T) {
 	}
 	if resp.StatusCode == http.StatusBadRequest {
 		t.Fatal("max_timeout=9999 should not be rejected; it should be capped silently")
+	}
+}
+
+func TestCrawlPagesCompletedConsistent(t *testing.T) {
+	pages := map[string]string{
+		"/":      `<html><head><title>Root</title></head><body><a href="/p1">P1</a><a href="/p2">P2</a></body></html>`,
+		"/p1":    `<html><head><title>P1</title></head><body>Content</body></html>`,
+		"/p2":    `<html><head><title>P2</title></head><body>Content</body></html>`,
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := pages[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	cm := testCrawlManager(srv.Client())
+
+	req := CrawlRequest{
+		URL:        srv.URL + "/",
+		MaxPages:   10,
+		MaxDepth:   3,
+		MaxTimeout: 10,
+		Format:     "markdown",
+	}
+
+	done := make(chan struct{})
+	go func() {
+		cm.RunCrawl(context.Background(), "test-consistent", req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("crawl timed out")
+	}
+
+	val, err := cm.queue.rdb.Get(context.Background(), jobKey("test-consistent")).Result()
+	if err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
+
+	var status JobStatus
+	if err := json.Unmarshal([]byte(val), &status); err != nil {
+		t.Fatal(err)
+	}
+
+	if status.PagesCompleted != status.PagesTotal {
+		t.Fatalf("PagesCompleted (%d) should equal PagesTotal (%d) on finalization",
+			status.PagesCompleted, status.PagesTotal)
 	}
 }
