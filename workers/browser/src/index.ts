@@ -2,6 +2,7 @@ import { chromium, type Browser } from "playwright";
 import Redis from "ioredis";
 import TurndownService from "turndown";
 import { URL } from "node:url";
+import { promises as dns } from "node:dns";
 
 const STREAM = process.env.STREAM ?? "browser_jobs";
 const GROUP = process.env.GROUP ?? "browser-workers";
@@ -49,6 +50,20 @@ const turndown = new TurndownService({
 (turndown as any).remove(["script", "style", "nav", "footer", "aside", "noscript", "svg"]);
 
 export function isPrivateIP(ip: string): boolean {
+  if (ip.includes(":")) {
+    const lower = ip.toLowerCase();
+    if (lower === "::1" || lower === "::") return true;
+    if (lower.startsWith("fe80:") || lower.startsWith("fc") || lower.startsWith("fd")) return true;
+    const v4mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (v4mapped) return isPrivateIP(v4mapped[1]);
+    const v4hex = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (v4hex) {
+      const hi = parseInt(v4hex[1], 16);
+      const lo = parseInt(v4hex[2], 16);
+      return isPrivateIP(`${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`);
+    }
+    return false;
+  }
   const parts = ip.split(".").map(Number);
   if (parts.length !== 4 || parts.some((p) => isNaN(p))) return true;
   const [a, b] = parts;
@@ -66,6 +81,16 @@ export async function validateURL(rawURL: string, resolvedIP?: string): Promise<
   const parsed = new URL(rawURL);
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error("SSRF: only http and https schemes are allowed");
+  }
+
+  let hostname = parsed.hostname;
+  if (hostname.startsWith("[") && hostname.endsWith("]")) {
+    hostname = hostname.slice(1, -1);
+  }
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname) || hostname.includes(":")) {
+    if (isPrivateIP(hostname)) {
+      throw new Error("SSRF: URL hostname is a private/reserved IP");
+    }
   }
 
   if (!resolvedIP) {
@@ -86,6 +111,31 @@ export async function renderPage(
   });
   const page = await context.newPage();
   try {
+    await context.route("**/*", async (route) => {
+      const reqURL = route.request().url();
+      try {
+        const reqParsed = new URL(reqURL);
+        let host = reqParsed.hostname;
+        if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
+        if (/^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(":")) {
+          if (isPrivateIP(host)) {
+            await route.abort("blockedbyclient");
+            return;
+          }
+        } else {
+          const addrs = await dns.resolve4(host).catch(() => [] as string[]);
+          if (addrs.some(isPrivateIP)) {
+            await route.abort("blockedbyclient");
+            return;
+          }
+        }
+      } catch {
+        await route.abort("blockedbyclient");
+        return;
+      }
+      await route.continue();
+    });
+
     const response = await page.goto(url, {
       waitUntil: "networkidle",
       timeout: PAGE_TIMEOUT_MS,
@@ -157,7 +207,8 @@ async function processJob(
     await validateURL(job.url, job.resolved_ip);
 
     const { html, title, description, language, statusCode } = await renderPage(browser, job.url);
-    const markdown = htmlToMarkdown(html);
+    const wantMarkdown = job.format !== "html";
+    const markdown = wantMarkdown ? htmlToMarkdown(html) : "";
 
     const payload: StatusPayload = {
       job_id: job.job_id,
@@ -168,7 +219,7 @@ async function processJob(
         {
           success: true,
           data: {
-            content: html,
+            content: wantMarkdown ? "" : html,
             markdown,
             metadata: { title, description, language, status_code: statusCode },
           },
@@ -179,6 +230,8 @@ async function processJob(
     await redis.set(resultKey, JSON.stringify(payload), "EX", RESULT_TTL_SECONDS);
     console.log(`[ok] job=${job.job_id} url=${redactURL(job.url)} status=${statusCode}`);
   } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const tag = errMsg.startsWith("SSRF") ? "ssrf_blocked" : "fetch_failed";
     const payload: StatusPayload = {
       job_id: job.job_id,
       status: "failed",
@@ -186,11 +239,15 @@ async function processJob(
       pages_completed: 0,
       results: [],
     };
-    await redis.set(resultKey, JSON.stringify(payload), "EX", RESULT_TTL_SECONDS);
-    console.error(`[fail] job=${job.job_id} url=${redactURL(job.url)} error=fetch failed`);
+    try {
+      await redis.set(resultKey, JSON.stringify(payload), "EX", RESULT_TTL_SECONDS);
+    } catch {
+      console.error(`[fail] could not write failure result for job=${job.job_id}`);
+    }
+    console.error(`[fail] job=${job.job_id} url=${redactURL(job.url)} error=${tag}`);
+  } finally {
+    await redis.xack(STREAM, GROUP, entryId).catch(() => {});
   }
-
-  await redis.xack(STREAM, GROUP, entryId);
 }
 
 async function main(): Promise<void> {

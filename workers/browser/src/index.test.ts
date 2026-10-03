@@ -49,6 +49,34 @@ describe("isPrivateIP", () => {
     expect(isPrivateIP("not-an-ip")).toBe(true);
     expect(isPrivateIP("")).toBe(true);
   });
+
+  it("blocks IPv6 loopback", () => {
+    expect(isPrivateIP("::1")).toBe(true);
+    expect(isPrivateIP("::")).toBe(true);
+  });
+
+  it("blocks IPv6 link-local", () => {
+    expect(isPrivateIP("fe80::1")).toBe(true);
+  });
+
+  it("blocks IPv6 ULA", () => {
+    expect(isPrivateIP("fc00::1")).toBe(true);
+    expect(isPrivateIP("fd00::1")).toBe(true);
+  });
+
+  it("blocks IPv4-mapped IPv6 private", () => {
+    expect(isPrivateIP("::ffff:127.0.0.1")).toBe(true);
+    expect(isPrivateIP("::ffff:10.0.0.1")).toBe(true);
+    expect(isPrivateIP("::ffff:169.254.169.254")).toBe(true);
+  });
+
+  it("allows IPv4-mapped IPv6 public", () => {
+    expect(isPrivateIP("::ffff:93.184.216.34")).toBe(false);
+  });
+
+  it("allows public IPv6", () => {
+    expect(isPrivateIP("2001:db8::1")).toBe(false);
+  });
 });
 
 describe("validateURL", () => {
@@ -78,6 +106,22 @@ describe("validateURL", () => {
 
   it("requires resolved_ip", async () => {
     await expect(validateURL("https://example.com")).rejects.toThrow("resolved_ip is required");
+  });
+
+  it("rejects URL with private IPv4 hostname", async () => {
+    await expect(validateURL("http://169.254.169.254/latest/meta-data/", "93.184.216.34")).rejects.toThrow("hostname");
+  });
+
+  it("rejects URL with loopback hostname", async () => {
+    await expect(validateURL("http://127.0.0.1/admin", "93.184.216.34")).rejects.toThrow("hostname");
+  });
+
+  it("rejects URL with IPv6 loopback hostname", async () => {
+    await expect(validateURL("http://[::1]/", "93.184.216.34")).rejects.toThrow("hostname");
+  });
+
+  it("rejects URL with IPv4-mapped IPv6 hostname", async () => {
+    await expect(validateURL("http://[::ffff:127.0.0.1]/", "93.184.216.34")).rejects.toThrow("hostname");
   });
 });
 
