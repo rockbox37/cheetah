@@ -145,8 +145,11 @@ func TestIsTierAllowed(t *testing.T) {
 	if !IsTierAllowed(TierStealth, []string{"fast", "browser", "stealth"}) {
 		t.Fatal("stealth should be allowed when plan includes it")
 	}
-	if !IsTierAllowed(TierBrowser, nil) {
-		t.Fatal("any tier should be allowed when AllowedTiers is empty")
+	if IsTierAllowed(TierBrowser, nil) {
+		t.Fatal("browser should not be allowed when AllowedTiers is empty (defaults to fast-only)")
+	}
+	if !IsTierAllowed(TierFast, nil) {
+		t.Fatal("fast should be allowed when AllowedTiers is empty")
 	}
 }
 

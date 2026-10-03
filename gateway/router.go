@@ -131,7 +131,7 @@ func ClassifyURL(rawURL string) RouteDecision {
 
 func IsTierAllowed(tier Tier, allowed []string) bool {
 	if len(allowed) == 0 {
-		return true
+		return tier == TierFast
 	}
 	for _, a := range allowed {
 		if Tier(a) == tier {
@@ -142,6 +142,12 @@ func IsTierAllowed(tier Tier, allowed []string) bool {
 }
 
 func LogRouteDecision(jobID string, rawURL string, decision RouteDecision) {
+	redacted := rawURL
+	if parsed, err := url.Parse(rawURL); err == nil {
+		parsed.RawQuery = ""
+		parsed.Fragment = ""
+		redacted = parsed.String()
+	}
 	log.Printf("route %s: tier=%s reason=%q confidence=%.2f url=%s",
-		jobID, decision.Tier, decision.Reason, decision.Confidence, rawURL)
+		jobID, decision.Tier, decision.Reason, decision.Confidence, redacted)
 }
