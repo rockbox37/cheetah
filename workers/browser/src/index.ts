@@ -72,8 +72,17 @@ export function isPrivateIP(ip: string): boolean {
   if (a === 192 && b === 168) return true;
   if (a === 127) return true;
   if (a === 0) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
   if (a === 169 && b === 254) return true;
   if (a >= 224) return true;
+  return false;
+}
+
+export function hostnameIsPrivateIP(hostname: string): boolean {
+  if (hostname.startsWith("[") && hostname.endsWith("]")) hostname = hostname.slice(1, -1);
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname) || hostname.includes(":")) {
+    return isPrivateIP(hostname);
+  }
   return false;
 }
 
@@ -83,14 +92,8 @@ export async function validateURL(rawURL: string, resolvedIP?: string): Promise<
     throw new Error("SSRF: only http and https schemes are allowed");
   }
 
-  let hostname = parsed.hostname;
-  if (hostname.startsWith("[") && hostname.endsWith("]")) {
-    hostname = hostname.slice(1, -1);
-  }
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname) || hostname.includes(":")) {
-    if (isPrivateIP(hostname)) {
-      throw new Error("SSRF: URL hostname is a private/reserved IP");
-    }
+  if (hostnameIsPrivateIP(parsed.hostname)) {
+    throw new Error("SSRF: URL hostname is a private/reserved IP");
   }
 
   if (!resolvedIP) {
@@ -111,20 +114,26 @@ export async function renderPage(
   });
   const page = await context.newPage();
   try {
+    const dnsCache = new Map<string, Promise<boolean>>();
     await context.route("**/*", async (route) => {
       const reqURL = route.request().url();
       try {
         const reqParsed = new URL(reqURL);
-        let host = reqParsed.hostname;
-        if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
-        if (/^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(":")) {
-          if (isPrivateIP(host)) {
-            await route.abort("blockedbyclient");
-            return;
+        if (hostnameIsPrivateIP(reqParsed.hostname)) {
+          await route.abort("blockedbyclient");
+          return;
+        }
+        const host = reqParsed.hostname.replace(/^\[|\]$/g, "");
+        if (!(/^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(":"))) {
+          let check = dnsCache.get(host);
+          if (!check) {
+            check = Promise.all([
+              dns.resolve4(host).catch(() => [] as string[]),
+              dns.resolve6(host).catch(() => [] as string[]),
+            ]).then(([v4, v6]) => [...v4, ...v6].some(isPrivateIP));
+            dnsCache.set(host, check);
           }
-        } else {
-          const addrs = await dns.resolve4(host).catch(() => [] as string[]);
-          if (addrs.some(isPrivateIP)) {
+          if (await check) {
             await route.abort("blockedbyclient");
             return;
           }
@@ -206,9 +215,10 @@ async function processJob(
   try {
     await validateURL(job.url, job.resolved_ip);
 
-    const { html, title, description, language, statusCode } = await renderPage(browser, job.url);
+    const result = await renderPage(browser, job.url);
     const wantMarkdown = job.format !== "html";
-    const markdown = wantMarkdown ? htmlToMarkdown(html) : "";
+    const markdown = wantMarkdown ? htmlToMarkdown(result.html) : "";
+    const content = wantMarkdown ? "" : result.html;
 
     const payload: StatusPayload = {
       job_id: job.job_id,
@@ -219,9 +229,14 @@ async function processJob(
         {
           success: true,
           data: {
-            content: wantMarkdown ? "" : html,
+            content,
             markdown,
-            metadata: { title, description, language, status_code: statusCode },
+            metadata: {
+              title: result.title,
+              description: result.description,
+              language: result.language,
+              status_code: result.statusCode,
+            },
           },
         },
       ],
@@ -284,6 +299,24 @@ async function main(): Promise<void> {
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+
+  try {
+    const claimed = await redis.xautoclaim(STREAM, GROUP, consumerName, 60000, "0-0", "COUNT", "100");
+    if (claimed && (claimed as any)[1]?.length > 0) {
+      const entries = (claimed as any)[1] as [string, string[]][];
+      console.log(`recovered ${entries.length} orphaned pending entries`);
+      for (const [entryId, fields] of entries) {
+        const job = parseJob(fields);
+        if (job) {
+          await processJob(redis, browser, job, entryId);
+        } else {
+          await redis.xack(STREAM, GROUP, entryId);
+        }
+      }
+    }
+  } catch {
+    // XAUTOCLAIM not supported or no pending entries
+  }
 
   console.log(`worker ready, consuming from stream '${STREAM}'`);
 

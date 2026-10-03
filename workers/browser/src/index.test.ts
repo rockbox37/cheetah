@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isPrivateIP, parseJob, redactURL, htmlToMarkdown, validateURL } from "./index.js";
+import { isPrivateIP, hostnameIsPrivateIP, parseJob, redactURL, htmlToMarkdown, validateURL } from "./index.js";
 
 describe("isPrivateIP", () => {
   it("blocks loopback", () => {
@@ -33,6 +33,15 @@ describe("isPrivateIP", () => {
   it("blocks multicast and reserved", () => {
     expect(isPrivateIP("224.0.0.1")).toBe(true);
     expect(isPrivateIP("255.255.255.255")).toBe(true);
+  });
+
+  it("blocks RFC 6598 CGNAT (100.64.0.0/10)", () => {
+    expect(isPrivateIP("100.64.0.1")).toBe(true);
+    expect(isPrivateIP("100.127.255.255")).toBe(true);
+  });
+
+  it("allows 100.128.x (outside CGNAT range)", () => {
+    expect(isPrivateIP("100.128.0.1")).toBe(false);
   });
 
   it("blocks 0.0.0.0", () => {
@@ -76,6 +85,28 @@ describe("isPrivateIP", () => {
 
   it("allows public IPv6", () => {
     expect(isPrivateIP("2001:db8::1")).toBe(false);
+  });
+});
+
+describe("hostnameIsPrivateIP", () => {
+  it("detects bracketed IPv6 loopback", () => {
+    expect(hostnameIsPrivateIP("[::1]")).toBe(true);
+  });
+
+  it("detects bracketed IPv4-mapped private", () => {
+    expect(hostnameIsPrivateIP("[::ffff:7f00:1]")).toBe(true);
+  });
+
+  it("allows plain hostname", () => {
+    expect(hostnameIsPrivateIP("example.com")).toBe(false);
+  });
+
+  it("detects private IPv4", () => {
+    expect(hostnameIsPrivateIP("192.168.1.1")).toBe(true);
+  });
+
+  it("allows public IPv4", () => {
+    expect(hostnameIsPrivateIP("93.184.216.34")).toBe(false);
   });
 });
 
