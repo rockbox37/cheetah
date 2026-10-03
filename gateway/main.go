@@ -213,6 +213,20 @@ func handleCrawl(queue *QueueClient) fiber.Handler {
 			req.MaxPages = 1000
 		}
 
+		if req.MaxDepth <= 0 {
+			req.MaxDepth = 3
+		}
+		if req.MaxDepth > 10 {
+			req.MaxDepth = 10
+		}
+
+		if req.MaxTimeout <= 0 {
+			req.MaxTimeout = 300
+		}
+		if req.MaxTimeout > 600 {
+			req.MaxTimeout = 600
+		}
+
 		if req.Format == "" {
 			req.Format = "markdown"
 		}

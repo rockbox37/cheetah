@@ -1,0 +1,372 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/net/html"
+)
+
+const (
+	crawlMaxBodyBytes  = 10 * 1024 * 1024
+	crawlConcurrency   = 5
+	crawlUserAgent     = "Mozilla/5.0 (compatible; Cheetah/1.0; +https://cheetah.dev/bot)"
+	crawlPageKeyPrefix = "crawl_pages"
+)
+
+func crawlPagesKey(jobID string) string {
+	return fmt.Sprintf("%s:%s", crawlPageKeyPrefix, jobID)
+}
+
+type crawlResult struct {
+	URL        string `json:"url"`
+	StatusCode int    `json:"status_code"`
+	Title      string `json:"title,omitempty"`
+	Content    string `json:"content,omitempty"`
+	Depth      int    `json:"depth"`
+	Error      string `json:"error,omitempty"`
+}
+
+type CrawlManager struct {
+	httpClient *http.Client
+	queue      *QueueClient
+}
+
+func NewCrawlManager(queue *QueueClient) *CrawlManager {
+	return &CrawlManager{
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 5 {
+					return fmt.Errorf("too many redirects")
+				}
+				return nil
+			},
+		},
+		queue: queue,
+	}
+}
+
+func (cm *CrawlManager) RunCrawl(ctx context.Context, jobID string, req CrawlRequest) {
+	timeout := time.Duration(req.MaxTimeout) * time.Second
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	seedURL, err := url.Parse(req.URL)
+	if err != nil {
+		cm.failJob(jobID, "invalid seed URL")
+		return
+	}
+
+	cm.updateJobStatus(jobID, "running", 0)
+
+	visited := make(map[string]bool)
+	visited[normalizeURL(req.URL)] = true
+
+	type queueItem struct {
+		url   string
+		depth int
+	}
+	queue := []queueItem{{url: req.URL, depth: 0}}
+
+	var results []crawlResult
+	pagesDone := 0
+
+	for len(queue) > 0 && pagesDone < req.MaxPages {
+		if ctx.Err() != nil {
+			break
+		}
+
+		batchSize := crawlConcurrency
+		if batchSize > len(queue) {
+			batchSize = len(queue)
+		}
+		if batchSize > req.MaxPages-pagesDone {
+			batchSize = req.MaxPages - pagesDone
+		}
+
+		batch := queue[:batchSize]
+		queue = queue[batchSize:]
+
+		var wg sync.WaitGroup
+		batchResults := make([]crawlResult, batchSize)
+
+		for i, item := range batch {
+			if ctx.Err() != nil {
+				break
+			}
+			wg.Add(1)
+			go func(idx int, it queueItem) {
+				defer wg.Done()
+				r := cm.fetchPage(ctx, it.url)
+				r.Depth = it.depth
+				batchResults[idx] = r
+			}(i, item)
+		}
+		wg.Wait()
+
+		for _, r := range batchResults {
+			if r.URL == "" {
+				continue
+			}
+			pagesDone++
+			results = append(results, r)
+
+			if r.Depth >= req.MaxDepth || r.Error != "" || r.Content == "" {
+				continue
+			}
+
+			links := extractLinks(r.Content, r.URL)
+			links = filterLinks(links, seedURL, req.IncludePatterns, req.ExcludePatterns)
+			for _, link := range links {
+				norm := normalizeURL(link)
+				if !visited[norm] {
+					visited[norm] = true
+					queue = append(queue, queueItem{url: link, depth: r.Depth + 1})
+				}
+			}
+		}
+
+		cm.updateJobStatus(jobID, "running", pagesDone)
+	}
+
+	status := "completed"
+	if ctx.Err() == context.DeadlineExceeded {
+		status = "partial"
+	}
+
+	cm.finalizeJob(jobID, status, pagesDone, results)
+}
+
+func (cm *CrawlManager) fetchPage(ctx context.Context, rawURL string) crawlResult {
+	result := crawlResult{URL: rawURL}
+
+	_, err := ValidateScrapeURL(rawURL)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	httpReq.Header.Set("User-Agent", crawlUserAgent)
+	httpReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	resp, err := cm.httpClient.Do(httpReq)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	defer resp.Body.Close()
+
+	result.StatusCode = resp.StatusCode
+
+	ct := resp.Header.Get("Content-Type")
+	if ct != "" && !strings.Contains(ct, "text/html") && !strings.Contains(ct, "application/xhtml") {
+		result.Error = "non-HTML content"
+		return result
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, crawlMaxBodyBytes))
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Content = string(body)
+	result.Title = extractTitle(result.Content)
+	return result
+}
+
+func extractLinks(htmlContent string, baseURL string) []string {
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return nil
+	}
+
+	tokenizer := html.NewTokenizer(strings.NewReader(htmlContent))
+	var links []string
+	seen := make(map[string]bool)
+
+	for {
+		tt := tokenizer.Next()
+		if tt == html.ErrorToken {
+			break
+		}
+		if tt != html.StartTagToken && tt != html.SelfClosingTagToken {
+			continue
+		}
+
+		t := tokenizer.Token()
+		if t.Data != "a" {
+			continue
+		}
+
+		for _, attr := range t.Attr {
+			if attr.Key != "href" {
+				continue
+			}
+			href := strings.TrimSpace(attr.Val)
+			if href == "" || strings.HasPrefix(href, "#") || strings.HasPrefix(href, "javascript:") || strings.HasPrefix(href, "mailto:") || strings.HasPrefix(href, "tel:") {
+				continue
+			}
+
+			resolved, err := base.Parse(href)
+			if err != nil {
+				continue
+			}
+
+			resolved.Fragment = ""
+			link := resolved.String()
+
+			if !seen[link] {
+				seen[link] = true
+				links = append(links, link)
+			}
+		}
+	}
+
+	return links
+}
+
+func filterLinks(links []string, seedURL *url.URL, includePatterns, excludePatterns []string) []string {
+	var filtered []string
+	for _, link := range links {
+		parsed, err := url.Parse(link)
+		if err != nil {
+			continue
+		}
+
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			continue
+		}
+
+		if parsed.Hostname() != seedURL.Hostname() {
+			continue
+		}
+
+		if shouldSkipCrawlURL(link) {
+			continue
+		}
+
+		if len(includePatterns) > 0 && !matchesAny(link, includePatterns) {
+			continue
+		}
+		if len(excludePatterns) > 0 && matchesAny(link, excludePatterns) {
+			continue
+		}
+
+		filtered = append(filtered, link)
+	}
+	return filtered
+}
+
+var skipExtensions = regexp.MustCompile(`(?i)\.(pdf|zip|tar|gz|exe|dmg|pkg|deb|rpm|iso|img|png|jpg|jpeg|gif|svg|webp|ico|bmp|tiff|mp3|mp4|avi|mov|wmv|flv|webm|ogg|wav|css|js|woff|woff2|ttf|eot|otf|map)$`)
+
+func shouldSkipCrawlURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return true
+	}
+	return skipExtensions.MatchString(parsed.Path)
+}
+
+func matchesAny(s string, patterns []string) bool {
+	for _, p := range patterns {
+		if strings.Contains(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	parsed.Fragment = ""
+	parsed.RawQuery = ""
+	return strings.TrimRight(parsed.String(), "/")
+}
+
+func extractTitle(htmlContent string) string {
+	tokenizer := html.NewTokenizer(strings.NewReader(htmlContent))
+	inTitle := false
+	for {
+		tt := tokenizer.Next()
+		if tt == html.ErrorToken {
+			return ""
+		}
+		if tt == html.StartTagToken {
+			t := tokenizer.Token()
+			if t.Data == "title" {
+				inTitle = true
+			}
+		} else if tt == html.TextToken && inTitle {
+			return strings.TrimSpace(tokenizer.Token().Data)
+		} else if tt == html.EndTagToken {
+			t := tokenizer.Token()
+			if t.Data == "title" {
+				inTitle = false
+			}
+		}
+	}
+}
+
+func (cm *CrawlManager) updateJobStatus(jobID string, status string, pagesCompleted int) {
+	jobStatus := JobStatus{
+		JobID:          jobID,
+		Status:         status,
+		PagesCompleted: pagesCompleted,
+	}
+	cm.queue.rdb.Set(context.Background(), jobKey(jobID), mustMarshal(jobStatus), jobTTL)
+}
+
+func (cm *CrawlManager) failJob(jobID string, reason string) {
+	jobStatus := JobStatus{
+		JobID:  jobID,
+		Status: "failed",
+	}
+	cm.queue.rdb.Set(context.Background(), jobKey(jobID), mustMarshal(jobStatus), jobTTL)
+	log.Printf("crawl %s failed: %s", jobID, reason)
+}
+
+func (cm *CrawlManager) finalizeJob(jobID string, status string, pagesTotal int, results []crawlResult) {
+	scrapeResults := make([]ScrapeResponse, 0, len(results))
+	for _, r := range results {
+		if r.Error != "" {
+			continue
+		}
+		scrapeResults = append(scrapeResults, ScrapeResponse{
+			Success: true,
+			Data: ScrapeData{
+				Content: r.Content,
+				Metadata: PageMetadata{
+					Title:      r.Title,
+					StatusCode: r.StatusCode,
+				},
+			},
+		})
+	}
+
+	jobStatus := JobStatus{
+		JobID:          jobID,
+		Status:         status,
+		PagesTotal:     pagesTotal,
+		PagesCompleted: len(scrapeResults),
+		Results:        scrapeResults,
+	}
+	cm.queue.rdb.Set(context.Background(), jobKey(jobID), mustMarshal(jobStatus), jobTTL)
+}

@@ -34,6 +34,8 @@ type PageMetadata struct {
 type CrawlRequest struct {
 	URL             string   `json:"url" validate:"required,url"`
 	MaxPages        int      `json:"max_pages,omitempty"`
+	MaxDepth        int      `json:"max_depth,omitempty"`
+	MaxTimeout      int      `json:"max_timeout,omitempty"`
 	IncludePatterns []string `json:"include_patterns,omitempty"`
 	ExcludePatterns []string `json:"exclude_patterns,omitempty"`
 	Format          string   `json:"format,omitempty"`

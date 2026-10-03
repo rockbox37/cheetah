@@ -61,3 +61,35 @@ func TestExtractRequestRequiresSchema(t *testing.T) {
 		t.Fatal("extract_schema should not be nil")
 	}
 }
+
+func TestCrawlRequestNewFields(t *testing.T) {
+	input := `{"url":"https://example.com","max_pages":50,"max_depth":5,"max_timeout":120}`
+	var req CrawlRequest
+	if err := json.Unmarshal([]byte(input), &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.MaxDepth != 5 {
+		t.Fatalf("expected max_depth 5, got %d", req.MaxDepth)
+	}
+	if req.MaxTimeout != 120 {
+		t.Fatalf("expected max_timeout 120, got %d", req.MaxTimeout)
+	}
+}
+
+func TestCrawlRequestOmitsZeroFields(t *testing.T) {
+	req := CrawlRequest{URL: "https://example.com"}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m["max_depth"]; ok {
+		t.Fatal("max_depth should be omitted when zero")
+	}
+	if _, ok := m["max_timeout"]; ok {
+		t.Fatal("max_timeout should be omitted when zero")
+	}
+}

@@ -99,6 +99,9 @@ func (q *QueueClient) EnqueueCrawl(ctx context.Context, req CrawlRequest, owner 
 			"job_id":      jobID,
 			"url":         req.URL,
 			"resolved_ip": req.ResolvedIP,
+			"max_pages":   req.MaxPages,
+			"max_depth":   req.MaxDepth,
+			"max_timeout": req.MaxTimeout,
 			"payload":     string(payload),
 		},
 	}).Err()
