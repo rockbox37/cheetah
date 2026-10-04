@@ -15,7 +15,10 @@ log = logging.getLogger(__name__)
 _API_BASE = os.environ.get("AI_ENDPOINT_URL", "")
 _API_KEY = os.environ.get("AI_API_KEY", "")
 _MODEL = os.environ.get("AI_MODEL", "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo")
-_TIMEOUT = int(os.environ.get("AI_TIMEOUT", "30"))
+try:
+    _TIMEOUT = int(os.environ.get("AI_TIMEOUT", "30"))
+except (ValueError, TypeError):
+    _TIMEOUT = 30
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 _client: httpx.AsyncClient | None = None
@@ -88,7 +91,10 @@ async def extract_json(html: str, schema: dict) -> dict:
     resp.raise_for_status()
 
     body = resp.json()
-    content = body["choices"][0]["message"]["content"]
+    choices = body.get("choices")
+    if not choices:
+        raise RuntimeError("AI endpoint returned no choices")
+    content = choices[0]["message"]["content"]
     return json.loads(content)
 
 
