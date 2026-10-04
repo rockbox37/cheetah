@@ -70,6 +70,7 @@ func NewApp(cfg Config, queue *QueueClient, opts ...AppOption) *fiber.App {
 	app.Use(RequestLogger())
 
 	app.Get("/health", handleHealthLiveness(queue))
+	app.Get("/.well-known/mcp.json", handleMCPDiscovery())
 
 	v1 := app.Group("/v1")
 	if len(cfg.APIKeys) > 0 {
@@ -92,6 +93,7 @@ func NewApp(cfg Config, queue *QueueClient, opts ...AppOption) *fiber.App {
 	v1.Post("/scrape", handleScrape(queue))
 	v1.Post("/crawl", handleCrawl(queue))
 	v1.Post("/extract", handleExtract(queue, cfg.AIEndpointURL))
+	v1.Post("/mcp", handleMCP(queue, cfg.AIEndpointURL))
 	v1.Get("/crawl/:id", handleCrawlStatus(queue))
 
 	return app
