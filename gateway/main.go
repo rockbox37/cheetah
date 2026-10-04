@@ -12,9 +12,10 @@ import (
 )
 
 type Config struct {
-	RedisURL string
-	APIKeys  []string
-	Port     string
+	RedisURL      string
+	APIKeys       []string
+	Port          string
+	AIEndpointURL string
 }
 
 func LoadConfig() Config {
@@ -40,9 +41,10 @@ func LoadConfig() Config {
 	}
 
 	return Config{
-		RedisURL: redisURL,
-		APIKeys:  apiKeys,
-		Port:     port,
+		RedisURL:      redisURL,
+		APIKeys:       apiKeys,
+		Port:          port,
+		AIEndpointURL: os.Getenv("AI_ENDPOINT_URL"),
 	}
 }
 
@@ -89,7 +91,7 @@ func NewApp(cfg Config, queue *QueueClient, opts ...AppOption) *fiber.App {
 	v1.Get("/health", handleHealthDiagnostic(queue))
 	v1.Post("/scrape", handleScrape(queue))
 	v1.Post("/crawl", handleCrawl(queue))
-	v1.Post("/extract", handleExtract(queue))
+	v1.Post("/extract", handleExtract(queue, cfg.AIEndpointURL))
 	v1.Get("/crawl/:id", handleCrawlStatus(queue))
 
 	return app
@@ -279,8 +281,15 @@ func handleCrawl(queue *QueueClient) fiber.Handler {
 	}
 }
 
-func handleExtract(queue *QueueClient) fiber.Handler {
+func handleExtract(queue *QueueClient, aiEndpoint string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		if aiEndpoint == "" {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
+				Success: false,
+				Error:   "extraction service not configured",
+			})
+		}
+
 		plan, _ := c.Locals("plan").(Plan)
 		if !plan.CanExtract {
 			return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{
