@@ -155,8 +155,33 @@ func TestCrawlRequiresAuth(t *testing.T) {
 	}
 }
 
-func TestExtractBlockedOnFreePlan(t *testing.T) {
+func TestExtractUnavailableWithoutEndpoint(t *testing.T) {
 	app := testApp()
+
+	body := bytes.NewBufferString(`{"url": "https://example.com", "extract_schema": {"type": "object"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/extract", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "test-key-123")
+
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 503 (no AI endpoint), got %d, body: %s", resp.StatusCode, string(respBody))
+	}
+}
+
+func TestExtractBlockedOnFreePlan(t *testing.T) {
+	cfg := Config{
+		RedisURL:      "localhost:6379",
+		APIKeys:       []string{"test-key-123"},
+		Port:          "3000",
+		AIEndpointURL: "https://ai.example.com/v1",
+	}
+	queue := NewQueueClient(cfg.RedisURL)
+	app := NewApp(cfg, queue)
 
 	body := bytes.NewBufferString(`{"url": "https://example.com", "extract_schema": {"type": "object"}}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/extract", body)
@@ -175,9 +200,10 @@ func TestExtractBlockedOnFreePlan(t *testing.T) {
 
 func TestExtractRequiresSchema(t *testing.T) {
 	cfg := Config{
-		RedisURL: "localhost:6379",
-		APIKeys:  []string{"test-key-123"},
-		Port:     "3000",
+		RedisURL:      "localhost:6379",
+		APIKeys:       []string{"test-key-123"},
+		Port:          "3000",
+		AIEndpointURL: "https://ai.example.com/v1",
 	}
 	queue := NewQueueClient(cfg.RedisURL)
 	proPlan := Plan{Name: "pro", CanExtract: true, MaxRatePerMinute: 100}
