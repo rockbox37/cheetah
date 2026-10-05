@@ -136,3 +136,23 @@ func TestSignProxyPlanGoldenVector(t *testing.T) {
 		t.Fatalf("golden vector = %s", got)
 	}
 }
+
+func TestIgnoreProxyPlanLogIsRateLimited(t *testing.T) {
+	proxyRejectLastLog.Store(0)
+	proxyRejectSuppressed.Store(0)
+	app := trustedProxyApp(testProxySecret)
+	pro := Plan{Name: "pro", CanExtract: true, MaxRatePerMinute: 100}
+
+	for i := 0; i < 5; i++ {
+		resp, err := app.Test(trustedExtractRequest(t, testProxySecret, pro, func(r *http.Request) {
+			r.Header.Set(headerProxySignature, strings.Repeat("0", 64))
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+	if got := proxyRejectSuppressed.Load(); got != 4 {
+		t.Fatalf("expected 4 suppressed log lines after the first, got %d", got)
+	}
+}

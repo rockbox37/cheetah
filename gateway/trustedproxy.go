@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"log"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -21,8 +22,8 @@ const (
 
 	trustedProxyMaxSkew = 30 * time.Second
 
-	// MinProxySecretLen is the shortest ENGINE_PROXY_SECRET accepted at startup.
-	MinProxySecretLen = 32
+	// minProxySecretLen is the shortest ENGINE_PROXY_SECRET accepted at startup.
+	minProxySecretLen = 32
 
 	ownerHashLen = 64 // hex-encoded SHA-256
 )
@@ -53,8 +54,26 @@ func isOwnerHash(s string) bool {
 	return true
 }
 
-func rejectProxyPlan(c *fiber.Ctx, reason string) error {
-	log.Printf("trusted-proxy: rejected reason=%s ip=%s", reason, anonymizeIP(c.IP()))
+var (
+	proxyRejectLastLog    atomic.Int64 // unix nanos of the last emitted line
+	proxyRejectSuppressed atomic.Int64
+)
+
+const proxyRejectLogInterval = 10 * time.Second
+
+// ignoreProxyPlan logs why presented proxy headers were not trusted, then lets
+// the request continue unauthenticated-as-proxy (normal plan loader). The log
+// is rate limited because any client can trigger it with one junk header
+// before the rate limiter runs.
+func ignoreProxyPlan(c *fiber.Ctx, reason string) error {
+	now := time.Now().UnixNano()
+	last := proxyRejectLastLog.Load()
+	if now-last >= int64(proxyRejectLogInterval) && proxyRejectLastLog.CompareAndSwap(last, now) {
+		log.Printf("trusted-proxy: ignored reason=%s ip=%s suppressed=%d",
+			reason, anonymizeIP(c.IP()), proxyRejectSuppressed.Swap(0))
+	} else {
+		proxyRejectSuppressed.Add(1)
+	}
 	return c.Next()
 }
 
@@ -77,26 +96,26 @@ func TrustedProxyPlan(secret string) fiber.Handler {
 
 		want := SignProxyPlan(secret, owner, planB64, ts, c.Method(), c.OriginalURL())
 		if !hmac.Equal([]byte(want), []byte(sig)) {
-			return rejectProxyPlan(c, "bad_signature")
+			return ignoreProxyPlan(c, "bad_signature")
 		}
 		sec, err := strconv.ParseInt(ts, 10, 64)
 		if err != nil {
-			return rejectProxyPlan(c, "bad_timestamp")
+			return ignoreProxyPlan(c, "bad_timestamp")
 		}
 		skew := time.Since(time.Unix(sec, 0))
 		if skew > trustedProxyMaxSkew || skew < -trustedProxyMaxSkew {
-			return rejectProxyPlan(c, "stale_timestamp")
+			return ignoreProxyPlan(c, "stale_timestamp")
 		}
 		if !isOwnerHash(owner) {
-			return rejectProxyPlan(c, "bad_owner")
+			return ignoreProxyPlan(c, "bad_owner")
 		}
 		raw, err := base64.StdEncoding.DecodeString(planB64)
 		if err != nil {
-			return rejectProxyPlan(c, "bad_plan_encoding")
+			return ignoreProxyPlan(c, "bad_plan_encoding")
 		}
 		var plan Plan
 		if err := json.Unmarshal(raw, &plan); err != nil {
-			return rejectProxyPlan(c, "bad_plan_json")
+			return ignoreProxyPlan(c, "bad_plan_json")
 		}
 
 		c.Locals("owner_hash", owner)

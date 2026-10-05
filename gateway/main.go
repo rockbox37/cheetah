@@ -27,8 +27,8 @@ func loadProxySecret() string {
 	switch {
 	case secret == "":
 		log.Printf("ENGINE_PROXY_SECRET unset: trusted proxy plan headers disabled")
-	case len(secret) < MinProxySecretLen:
-		log.Fatalf("ENGINE_PROXY_SECRET must be at least %d characters", MinProxySecretLen)
+	case len(secret) < minProxySecretLen:
+		log.Fatalf("ENGINE_PROXY_SECRET must be at least %d characters", minProxySecretLen)
 	}
 	return secret
 }
