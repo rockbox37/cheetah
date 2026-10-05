@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const testProxySecret = "proxy-secret"
+const testProxySecret = "proxy-secret-proxy-secret-proxy-secret"
 
 var testOwner = strings.Repeat("ab", 32)
 
@@ -35,7 +35,7 @@ func trustedExtractRequest(t *testing.T, secret string, plan Plan, mutate func(*
 	req.Header.Set(headerProxyOwner, testOwner)
 	req.Header.Set(headerProxyPlan, planB64)
 	req.Header.Set(headerProxyTimestamp, ts)
-	req.Header.Set(headerProxySignature, SignProxyPlan(secret, testOwner, planB64, ts))
+	req.Header.Set(headerProxySignature, SignProxyPlan(secret, testOwner, planB64, ts, http.MethodPost, "/v1/extract"))
 	if mutate != nil {
 		mutate(req)
 	}
@@ -79,14 +79,25 @@ func TestTrustedProxyPlanRejectsBadInput(t *testing.T) {
 			ts := strconv.FormatInt(time.Now().Add(-5*time.Minute).Unix(), 10)
 			planB64 := r.Header.Get(headerProxyPlan)
 			r.Header.Set(headerProxyTimestamp, ts)
-			r.Header.Set(headerProxySignature, SignProxyPlan(testProxySecret, testOwner, planB64, ts))
+			r.Header.Set(headerProxySignature, SignProxyPlan(testProxySecret, testOwner, planB64, ts, http.MethodPost, "/v1/extract"))
+		},
+		"replayed on another URI": func(r *http.Request) {
+			r.URL.RawQuery = "x=1"
+			r.RequestURI = "/v1/extract?x=1"
+		},
+		"uppercase owner": func(r *http.Request) {
+			up := strings.ToUpper(testOwner)
+			planB64 := r.Header.Get(headerProxyPlan)
+			ts := r.Header.Get(headerProxyTimestamp)
+			r.Header.Set(headerProxyOwner, up)
+			r.Header.Set(headerProxySignature, SignProxyPlan(testProxySecret, up, planB64, ts, http.MethodPost, "/v1/extract"))
 		},
 		"missing signature": func(r *http.Request) { r.Header.Del(headerProxySignature) },
 		"non-hash owner": func(r *http.Request) {
 			planB64 := r.Header.Get(headerProxyPlan)
 			ts := r.Header.Get(headerProxyTimestamp)
 			r.Header.Set(headerProxyOwner, "anonymous")
-			r.Header.Set(headerProxySignature, SignProxyPlan(testProxySecret, "anonymous", planB64, ts))
+			r.Header.Set(headerProxySignature, SignProxyPlan(testProxySecret, "anonymous", planB64, ts, http.MethodPost, "/v1/extract"))
 		},
 	}
 	for name, mutate := range cases {
@@ -113,5 +124,15 @@ func TestTrustedProxyPlanIgnoredWithoutSecret(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 when engine has no proxy secret, got %d", resp.StatusCode)
+	}
+}
+
+func TestSignProxyPlanGoldenVector(t *testing.T) {
+	// Same vector as cheetah-cloud billing/proxysign_test.go: a mismatch means
+	// the two repos' signing has drifted apart.
+	got := SignProxyPlan("s", "o", "p", "1", "POST", "/v1/scrape?x=1")
+	const want = "3a041c91b77cde97262a3e9ece74ea0a44d81ebcdd03ea26ce230c015253b273"
+	if got != want {
+		t.Fatalf("golden vector = %s", got)
 	}
 }

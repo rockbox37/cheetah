@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"strconv"
 	"time"
 
@@ -18,24 +19,43 @@ const (
 	headerProxyTimestamp = "X-Cheetah-Timestamp"
 	headerProxySignature = "X-Cheetah-Signature"
 
-	trustedProxyMaxSkew = 60 * time.Second
+	trustedProxyMaxSkew = 30 * time.Second
+
+	// MinProxySecretLen is the shortest ENGINE_PROXY_SECRET accepted at startup.
+	MinProxySecretLen = 32
+
+	ownerHashLen = 64 // hex-encoded SHA-256
 )
 
 // SignProxyPlan returns the hex HMAC-SHA256 over the owner hash, the
-// base64-encoded plan JSON, and the unix timestamp. Exported so the cloud
-// wrapper that fronts the engine can produce the same signature.
-func SignProxyPlan(secret, owner, planB64, timestamp string) string {
+// base64-encoded plan JSON, the unix timestamp, and the request method and
+// URI, so a captured header set cannot be replayed against another endpoint.
+// Mirrored in cheetah-cloud billing/proxysign.go; both are pinned by the same
+// golden vector in their tests.
+func SignProxyPlan(secret, owner, planB64, timestamp, method, uri string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(owner + "\n" + planB64 + "\n" + timestamp))
+	mac.Write([]byte(owner + "\n" + planB64 + "\n" + timestamp + "\n" + method + "\n" + uri))
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+// isOwnerHash reports whether s is a lowercase hex SHA-256, the exact form
+// hashAPIKey produces, so a differently-cased owner cannot form a second namespace.
 func isOwnerHash(s string) bool {
-	if len(s) != 64 {
+	if len(s) != ownerHashLen {
 		return false
 	}
-	_, err := hex.DecodeString(s)
-	return err == nil
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func rejectProxyPlan(c *fiber.Ctx, reason string) error {
+	log.Printf("trusted-proxy: rejected reason=%s ip=%s", reason, anonymizeIP(c.IP()))
+	return c.Next()
 }
 
 // TrustedProxyPlan lets a trusted upstream (the cloud billing proxy) tell the
@@ -51,32 +71,32 @@ func TrustedProxyPlan(secret string) fiber.Handler {
 		planB64 := c.Get(headerProxyPlan)
 		ts := c.Get(headerProxyTimestamp)
 		sig := c.Get(headerProxySignature)
-		if owner == "" || planB64 == "" || ts == "" || sig == "" {
-			return c.Next()
+		if owner == "" && planB64 == "" && ts == "" && sig == "" {
+			return c.Next() // not proxied; the normal case for direct callers
 		}
 
-		want := SignProxyPlan(secret, owner, planB64, ts)
+		want := SignProxyPlan(secret, owner, planB64, ts, c.Method(), c.OriginalURL())
 		if !hmac.Equal([]byte(want), []byte(sig)) {
-			return c.Next()
+			return rejectProxyPlan(c, "bad_signature")
 		}
 		sec, err := strconv.ParseInt(ts, 10, 64)
 		if err != nil {
-			return c.Next()
+			return rejectProxyPlan(c, "bad_timestamp")
 		}
 		skew := time.Since(time.Unix(sec, 0))
 		if skew > trustedProxyMaxSkew || skew < -trustedProxyMaxSkew {
-			return c.Next()
+			return rejectProxyPlan(c, "stale_timestamp")
 		}
 		if !isOwnerHash(owner) {
-			return c.Next()
+			return rejectProxyPlan(c, "bad_owner")
 		}
 		raw, err := base64.StdEncoding.DecodeString(planB64)
 		if err != nil {
-			return c.Next()
+			return rejectProxyPlan(c, "bad_plan_encoding")
 		}
 		var plan Plan
 		if err := json.Unmarshal(raw, &plan); err != nil {
-			return c.Next()
+			return rejectProxyPlan(c, "bad_plan_json")
 		}
 
 		c.Locals("owner_hash", owner)

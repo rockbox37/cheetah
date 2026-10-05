@@ -19,6 +19,20 @@ type Config struct {
 	ProxySecret   string
 }
 
+// loadProxySecret reads ENGINE_PROXY_SECRET and refuses to start on a weak
+// value: an unset secret just disables the feature, but a short one invites
+// offline brute force from a captured header set.
+func loadProxySecret() string {
+	secret := strings.TrimSpace(os.Getenv("ENGINE_PROXY_SECRET"))
+	switch {
+	case secret == "":
+		log.Printf("ENGINE_PROXY_SECRET unset: trusted proxy plan headers disabled")
+	case len(secret) < MinProxySecretLen:
+		log.Fatalf("ENGINE_PROXY_SECRET must be at least %d characters", MinProxySecretLen)
+	}
+	return secret
+}
+
 func LoadConfig() Config {
 	redisURL := os.Getenv("REDIS_URL")
 	if redisURL == "" {
@@ -46,7 +60,7 @@ func LoadConfig() Config {
 		APIKeys:       apiKeys,
 		Port:          port,
 		AIEndpointURL: os.Getenv("AI_ENDPOINT_URL"),
-		ProxySecret:   os.Getenv("ENGINE_PROXY_SECRET"),
+		ProxySecret:   loadProxySecret(),
 	}
 }
 
