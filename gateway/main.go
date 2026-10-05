@@ -16,6 +16,7 @@ type Config struct {
 	APIKeys       []string
 	Port          string
 	AIEndpointURL string
+	ProxySecret   string
 }
 
 func LoadConfig() Config {
@@ -45,6 +46,7 @@ func LoadConfig() Config {
 		APIKeys:       apiKeys,
 		Port:          port,
 		AIEndpointURL: os.Getenv("AI_ENDPOINT_URL"),
+		ProxySecret:   os.Getenv("ENGINE_PROXY_SECRET"),
 	}
 }
 
@@ -82,6 +84,7 @@ func NewApp(cfg Config, queue *QueueClient, opts ...AppOption) *fiber.App {
 		})
 	}
 	v1.Use(OwnerHashMiddleware())
+	v1.Use(TrustedProxyPlan(cfg.ProxySecret))
 	v1.Use(PlanMiddleware(deps.planLoader))
 	v1.Use(RateLimiter())
 	v1.Use(func(c *fiber.Ctx) error {
