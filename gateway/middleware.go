@@ -198,6 +198,9 @@ func RequestLogger() fiber.Handler {
 
 func PlanMiddleware(loader PlanLoader) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		if trusted, _ := c.Locals("plan_trusted").(bool); trusted {
+			return c.Next()
+		}
 		ownerHash, _ := c.Locals("owner_hash").(string)
 		plan, err := loader.LoadPlan(c.Context(), ownerHash)
 		if err != nil {

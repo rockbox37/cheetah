@@ -16,6 +16,21 @@ type Config struct {
 	APIKeys       []string
 	Port          string
 	AIEndpointURL string
+	ProxySecret   string
+}
+
+// loadProxySecret reads ENGINE_PROXY_SECRET and refuses to start on a weak
+// value: an unset secret just disables the feature, but a short one invites
+// offline brute force from a captured header set.
+func loadProxySecret() string {
+	secret := strings.TrimSpace(os.Getenv("ENGINE_PROXY_SECRET"))
+	switch {
+	case secret == "":
+		log.Printf("ENGINE_PROXY_SECRET unset: trusted proxy plan headers disabled")
+	case len(secret) < minProxySecretLen:
+		log.Fatalf("ENGINE_PROXY_SECRET must be at least %d characters", minProxySecretLen)
+	}
+	return secret
 }
 
 func LoadConfig() Config {
@@ -45,6 +60,7 @@ func LoadConfig() Config {
 		APIKeys:       apiKeys,
 		Port:          port,
 		AIEndpointURL: os.Getenv("AI_ENDPOINT_URL"),
+		ProxySecret:   loadProxySecret(),
 	}
 }
 
@@ -82,6 +98,7 @@ func NewApp(cfg Config, queue *QueueClient, opts ...AppOption) *fiber.App {
 		})
 	}
 	v1.Use(OwnerHashMiddleware())
+	v1.Use(TrustedProxyPlan(cfg.ProxySecret))
 	v1.Use(PlanMiddleware(deps.planLoader))
 	v1.Use(RateLimiter())
 	v1.Use(func(c *fiber.Ctx) error {
