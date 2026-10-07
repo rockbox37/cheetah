@@ -180,7 +180,6 @@ func handleScrape(queue *QueueClient) fiber.Handler {
 			})
 		}
 
-		req.ResultTTL = planResultTTL(plan)
 		owner := callerOwner(c)
 		stream := StreamForTier(decision.Tier)
 		jobID, err := queue.EnqueueScrape(c.Context(), req, owner, stream)
@@ -364,7 +363,6 @@ func handleExtract(queue *QueueClient, aiEndpoint string) fiber.Handler {
 			Timeout:       req.Timeout,
 			Wait:          req.Wait,
 			ResolvedIP:    resolvedIP,
-			ResultTTL:     planResultTTL(plan),
 		}
 
 		owner := callerOwner(c)
