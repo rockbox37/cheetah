@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -114,6 +115,13 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 	})
 }
 
+func planResultTTL(plan Plan) time.Duration {
+	if plan.ResultRetentionHours > 0 {
+		return time.Duration(plan.ResultRetentionHours) * time.Hour
+	}
+	return 0
+}
+
 func callerOwner(c *fiber.Ctx) string {
 	hash, _ := c.Locals("owner_hash").(string)
 	if hash == "" {
@@ -172,6 +180,7 @@ func handleScrape(queue *QueueClient) fiber.Handler {
 			})
 		}
 
+		req.ResultTTL = planResultTTL(plan)
 		owner := callerOwner(c)
 		stream := StreamForTier(decision.Tier)
 		jobID, err := queue.EnqueueScrape(c.Context(), req, owner, stream)
@@ -263,6 +272,7 @@ func handleCrawl(queue *QueueClient) fiber.Handler {
 			})
 		}
 
+		req.ResultTTL = planResultTTL(plan)
 		owner := callerOwner(c)
 		jobID, err := queue.EnqueueCrawl(c.Context(), req, owner)
 		if err != nil {
@@ -354,6 +364,7 @@ func handleExtract(queue *QueueClient, aiEndpoint string) fiber.Handler {
 			Timeout:       req.Timeout,
 			Wait:          req.Wait,
 			ResolvedIP:    resolvedIP,
+			ResultTTL:     planResultTTL(plan),
 		}
 
 		owner := callerOwner(c)
