@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -129,6 +130,13 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 		Success: false,
 		Error:   msg,
 	})
+}
+
+func planResultTTL(plan Plan) time.Duration {
+	if plan.ResultRetentionHours > 0 {
+		return time.Duration(plan.ResultRetentionHours) * time.Hour
+	}
+	return 0
 }
 
 func callerOwner(c *fiber.Ctx) string {
@@ -280,6 +288,7 @@ func handleCrawl(queue *QueueClient) fiber.Handler {
 			})
 		}
 
+		req.ResultTTL = planResultTTL(plan)
 		owner := callerOwner(c)
 		jobID, err := queue.EnqueueCrawl(c.Context(), req, owner)
 		if err != nil {

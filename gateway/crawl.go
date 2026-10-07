@@ -91,11 +91,11 @@ func (cm *CrawlManager) RunCrawl(ctx context.Context, jobID string, req CrawlReq
 
 	seedURL, err := url.Parse(req.URL)
 	if err != nil {
-		cm.failJob(jobID, "invalid seed URL")
+		cm.failJob(jobID, "invalid seed URL", req.ResultTTL)
 		return
 	}
 
-	cm.updateJobStatus(jobID, "running", 0)
+	cm.updateJobStatus(jobID, "running", 0, req.ResultTTL)
 
 	visited := make(map[string]bool)
 	visited[normalizeURL(req.URL)] = true
@@ -174,7 +174,7 @@ func (cm *CrawlManager) RunCrawl(ctx context.Context, jobID string, req CrawlReq
 			}
 		}
 
-		cm.updateJobStatus(jobID, "running", pagesDone)
+		cm.updateJobStatus(jobID, "running", pagesDone, req.ResultTTL)
 
 		if totalBytes > crawlMaxTotalSize {
 			break
@@ -186,7 +186,7 @@ func (cm *CrawlManager) RunCrawl(ctx context.Context, jobID string, req CrawlReq
 		status = "partial"
 	}
 
-	cm.finalizeJob(jobID, status, pagesDone, results)
+	cm.finalizeJob(jobID, status, pagesDone, results, req.ResultTTL)
 }
 
 func (cm *CrawlManager) fetchPage(ctx context.Context, rawURL string) crawlResult {
@@ -361,21 +361,21 @@ func extractTitle(htmlContent string) string {
 	}
 }
 
-func (cm *CrawlManager) updateJobStatus(jobID string, status string, pagesCompleted int) {
+func (cm *CrawlManager) updateJobStatus(jobID string, status string, pagesCompleted int, ttl time.Duration) {
 	jobStatus := JobStatus{
 		JobID:          jobID,
 		Status:         status,
 		PagesCompleted: pagesCompleted,
 	}
-	cm.queue.rdb.Set(context.Background(), jobKey(jobID), mustMarshal(jobStatus), jobTTL)
+	cm.queue.rdb.Set(context.Background(), jobKey(jobID), mustMarshal(jobStatus), effectiveTTL(ttl))
 }
 
-func (cm *CrawlManager) failJob(jobID string, reason string) {
-	cm.updateJobStatus(jobID, "failed", 0)
+func (cm *CrawlManager) failJob(jobID string, reason string, ttl time.Duration) {
+	cm.updateJobStatus(jobID, "failed", 0, ttl)
 	log.Printf("crawl %s failed: %s", jobID, reason)
 }
 
-func (cm *CrawlManager) finalizeJob(jobID string, status string, pagesTotal int, results []crawlResult) {
+func (cm *CrawlManager) finalizeJob(jobID string, status string, pagesTotal int, results []crawlResult, ttl time.Duration) {
 	scrapeResults := make([]ScrapeResponse, 0, len(results))
 	for _, r := range results {
 		if r.Error != "" {
@@ -400,5 +400,5 @@ func (cm *CrawlManager) finalizeJob(jobID string, status string, pagesTotal int,
 		PagesCompleted: pagesTotal,
 		Results:        scrapeResults,
 	}
-	cm.queue.rdb.Set(context.Background(), jobKey(jobID), mustMarshal(jobStatus), jobTTL)
+	cm.queue.rdb.Set(context.Background(), jobKey(jobID), mustMarshal(jobStatus), effectiveTTL(ttl))
 }

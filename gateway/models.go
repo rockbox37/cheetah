@@ -1,6 +1,9 @@
 package main
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 type ScrapeRequest struct {
 	URL           string           `json:"url" validate:"required,url"`
@@ -10,6 +13,7 @@ type ScrapeRequest struct {
 	Timeout       int              `json:"timeout,omitempty"`
 	Wait          bool             `json:"wait,omitempty"`
 	ResolvedIP    string           `json:"-"`
+	ResultTTL     time.Duration    `json:"-"`
 }
 
 type ScrapeResponse struct {
@@ -32,14 +36,15 @@ type PageMetadata struct {
 }
 
 type CrawlRequest struct {
-	URL             string   `json:"url" validate:"required,url"`
-	MaxPages        int      `json:"max_pages,omitempty"`
-	MaxDepth        int      `json:"max_depth,omitempty"`
-	MaxTimeout      int      `json:"max_timeout,omitempty"`
-	IncludePatterns []string `json:"include_patterns,omitempty"`
-	ExcludePatterns []string `json:"exclude_patterns,omitempty"`
-	Format          string   `json:"format,omitempty"`
-	ResolvedIP      string   `json:"-"`
+	URL             string        `json:"url" validate:"required,url"`
+	MaxPages        int           `json:"max_pages,omitempty"`
+	MaxDepth        int           `json:"max_depth,omitempty"`
+	MaxTimeout      int           `json:"max_timeout,omitempty"`
+	IncludePatterns []string      `json:"include_patterns,omitempty"`
+	ExcludePatterns []string      `json:"exclude_patterns,omitempty"`
+	Format          string        `json:"format,omitempty"`
+	ResolvedIP      string        `json:"-"`
+	ResultTTL       time.Duration `json:"-"`
 }
 
 type CrawlResponse struct {

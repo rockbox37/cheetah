@@ -46,6 +46,13 @@ func (q *QueueClient) Close() error {
 	return q.rdb.Close()
 }
 
+func effectiveTTL(requested time.Duration) time.Duration {
+	if requested > 0 {
+		return requested
+	}
+	return jobTTL
+}
+
 func (q *QueueClient) EnqueueScrape(ctx context.Context, req ScrapeRequest, owner string, stream ...string) (string, error) {
 	jobID := uuid.New().String()
 
@@ -75,12 +82,13 @@ func (q *QueueClient) EnqueueScrape(ctx context.Context, req ScrapeRequest, owne
 		return "", fmt.Errorf("enqueue scrape job: %w", err)
 	}
 
+	ttl := effectiveTTL(req.ResultTTL)
 	pipe := q.rdb.Pipeline()
 	pipe.Set(ctx, jobKey(jobID), mustMarshal(JobStatus{
 		JobID:  jobID,
 		Status: "queued",
-	}), jobTTL)
-	pipe.Set(ctx, ownerKey(jobID), owner, jobTTL)
+	}), ttl)
+	pipe.Set(ctx, ownerKey(jobID), owner, ttl)
 	if _, err = pipe.Exec(ctx); err != nil {
 		return "", fmt.Errorf("set initial job status: %w", err)
 	}
@@ -114,12 +122,13 @@ func (q *QueueClient) EnqueueCrawl(ctx context.Context, req CrawlRequest, owner 
 		return "", fmt.Errorf("enqueue crawl job: %w", err)
 	}
 
+	ttl := effectiveTTL(req.ResultTTL)
 	pipe := q.rdb.Pipeline()
 	pipe.Set(ctx, jobKey(jobID), mustMarshal(JobStatus{
 		JobID:  jobID,
 		Status: "queued",
-	}), jobTTL)
-	pipe.Set(ctx, ownerKey(jobID), owner, jobTTL)
+	}), ttl)
+	pipe.Set(ctx, ownerKey(jobID), owner, ttl)
 	if _, err = pipe.Exec(ctx); err != nil {
 		return "", fmt.Errorf("set initial job status: %w", err)
 	}
