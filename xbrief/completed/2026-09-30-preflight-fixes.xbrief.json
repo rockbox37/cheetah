@@ -7,55 +7,55 @@
   },
   "plan": {
     "title": "Preflight P0-P2 Fixes (Iteration 2)",
-    "status": "running",
+    "status": "completed",
     "items": [
       {
         "id": "fix-redis-mismatch",
         "title": "Fix gateway-worker Redis key protocol mismatch",
         "type": "task",
-        "status": "pending"
+        "status": "completed"
       },
       {
         "id": "fix-rate-limiter",
         "title": "Add rate limiter bucket eviction",
         "type": "task",
-        "status": "pending"
+        "status": "completed"
       },
       {
         "id": "fix-ssrf-redirect",
         "title": "Disable redirect following in Rust worker",
         "type": "task",
-        "status": "pending"
+        "status": "completed"
       },
       {
         "id": "fix-api-key-leak",
         "title": "Hash API key for owner field, hide from JSON response",
         "type": "task",
-        "status": "pending"
+        "status": "completed"
       },
       {
         "id": "fix-maxpages-cap",
         "title": "Cap CrawlRequest.MaxPages",
         "type": "task",
-        "status": "pending"
+        "status": "completed"
       },
       {
         "id": "fix-stream-trim",
         "title": "Add MAXLEN to Redis stream XADD",
         "type": "task",
-        "status": "pending"
+        "status": "completed"
       },
       {
         "id": "fix-python-headers",
         "title": "Remove pointless headers_lower_vals dict",
         "type": "task",
-        "status": "pending"
+        "status": "completed"
       },
       {
         "id": "fix-dead-item-counter",
         "title": "Remove dead item_counter from ConvertState",
         "type": "task",
-        "status": "pending"
+        "status": "completed"
       }
     ],
     "acceptance": {
