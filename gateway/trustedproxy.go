@@ -54,25 +54,50 @@ func isOwnerHash(s string) bool {
 	return true
 }
 
-var (
-	proxyRejectLastLog    atomic.Int64 // unix nanos of the last emitted line
-	proxyRejectSuppressed atomic.Int64
+// Rejection reasons. Each has its own rate-limit bucket so a flood of one
+// reason (typically junk signatures) cannot mask another, such as a proxy
+// whose clock or secret has drifted.
+const (
+	rejectBadSignature = iota
+	rejectBadTimestamp
+	rejectStaleTimestamp
+	rejectBadOwner
+	rejectBadPlanEncoding
+	rejectBadPlanJSON
+	rejectReasonCount
 )
+
+var proxyRejectReasons = [rejectReasonCount]string{
+	rejectBadSignature:    "bad_signature",
+	rejectBadTimestamp:    "bad_timestamp",
+	rejectStaleTimestamp:  "stale_timestamp",
+	rejectBadOwner:        "bad_owner",
+	rejectBadPlanEncoding: "bad_plan_encoding",
+	rejectBadPlanJSON:     "bad_plan_json",
+}
+
+type proxyRejectBucket struct {
+	lastLog    atomic.Int64 // unix nanos of the last emitted line
+	suppressed atomic.Int64
+}
+
+var proxyRejects [rejectReasonCount]proxyRejectBucket
 
 const proxyRejectLogInterval = 10 * time.Second
 
 // ignoreProxyPlan logs why presented proxy headers were not trusted, then lets
 // the request continue unauthenticated-as-proxy (normal plan loader). The log
-// is rate limited because any client can trigger it with one junk header
-// before the rate limiter runs.
-func ignoreProxyPlan(c *fiber.Ctx, reason string) error {
+// is rate limited per reason because any client can trigger it with one junk
+// header before the rate limiter runs.
+func ignoreProxyPlan(c *fiber.Ctx, reason int) error {
+	bucket := &proxyRejects[reason]
 	now := time.Now().UnixNano()
-	last := proxyRejectLastLog.Load()
-	if now-last >= int64(proxyRejectLogInterval) && proxyRejectLastLog.CompareAndSwap(last, now) {
+	last := bucket.lastLog.Load()
+	if now-last >= int64(proxyRejectLogInterval) && bucket.lastLog.CompareAndSwap(last, now) {
 		log.Printf("trusted-proxy: ignored reason=%s ip=%s suppressed=%d",
-			reason, anonymizeIP(c.IP()), proxyRejectSuppressed.Swap(0))
+			proxyRejectReasons[reason], anonymizeIP(c.IP()), bucket.suppressed.Swap(0))
 	} else {
-		proxyRejectSuppressed.Add(1)
+		bucket.suppressed.Add(1)
 	}
 	return c.Next()
 }
@@ -96,26 +121,26 @@ func TrustedProxyPlan(secret string) fiber.Handler {
 
 		want := SignProxyPlan(secret, owner, planB64, ts, c.Method(), c.OriginalURL())
 		if !hmac.Equal([]byte(want), []byte(sig)) {
-			return ignoreProxyPlan(c, "bad_signature")
+			return ignoreProxyPlan(c, rejectBadSignature)
 		}
 		sec, err := strconv.ParseInt(ts, 10, 64)
 		if err != nil {
-			return ignoreProxyPlan(c, "bad_timestamp")
+			return ignoreProxyPlan(c, rejectBadTimestamp)
 		}
 		skew := time.Since(time.Unix(sec, 0))
 		if skew > trustedProxyMaxSkew || skew < -trustedProxyMaxSkew {
-			return ignoreProxyPlan(c, "stale_timestamp")
+			return ignoreProxyPlan(c, rejectStaleTimestamp)
 		}
 		if !isOwnerHash(owner) {
-			return ignoreProxyPlan(c, "bad_owner")
+			return ignoreProxyPlan(c, rejectBadOwner)
 		}
 		raw, err := base64.StdEncoding.DecodeString(planB64)
 		if err != nil {
-			return ignoreProxyPlan(c, "bad_plan_encoding")
+			return ignoreProxyPlan(c, rejectBadPlanEncoding)
 		}
 		var plan Plan
 		if err := json.Unmarshal(raw, &plan); err != nil {
-			return ignoreProxyPlan(c, "bad_plan_json")
+			return ignoreProxyPlan(c, rejectBadPlanJSON)
 		}
 
 		c.Locals("owner_hash", owner)

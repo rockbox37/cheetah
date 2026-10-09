@@ -138,8 +138,7 @@ func TestSignProxyPlanGoldenVector(t *testing.T) {
 }
 
 func TestIgnoreProxyPlanLogIsRateLimited(t *testing.T) {
-	proxyRejectLastLog.Store(0)
-	proxyRejectSuppressed.Store(0)
+	resetProxyRejects()
 	app := trustedProxyApp(testProxySecret)
 	pro := Plan{Name: "pro", CanExtract: true, MaxRatePerMinute: 100}
 
@@ -152,7 +151,48 @@ func TestIgnoreProxyPlanLogIsRateLimited(t *testing.T) {
 		}
 		_ = resp.Body.Close()
 	}
-	if got := proxyRejectSuppressed.Load(); got != 4 {
+	if got := proxyRejects[rejectBadSignature].suppressed.Load(); got != 4 {
 		t.Fatalf("expected 4 suppressed log lines after the first, got %d", got)
+	}
+}
+
+func resetProxyRejects() {
+	for i := range proxyRejects {
+		proxyRejects[i].lastLog.Store(0)
+		proxyRejects[i].suppressed.Store(0)
+	}
+}
+
+func TestIgnoreProxyPlanBucketsArePerReason(t *testing.T) {
+	resetProxyRejects()
+	app := trustedProxyApp(testProxySecret)
+	pro := Plan{Name: "pro", CanExtract: true, MaxRatePerMinute: 100}
+	send := func(mutate func(*http.Request)) {
+		resp, err := app.Test(trustedExtractRequest(t, testProxySecret, pro, mutate))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+
+	// Flood bad signatures, then a single stale timestamp (validly signed).
+	for i := 0; i < 5; i++ {
+		send(func(r *http.Request) { r.Header.Set(headerProxySignature, strings.Repeat("0", 64)) })
+	}
+	send(func(r *http.Request) {
+		ts := strconv.FormatInt(time.Now().Add(-time.Hour).Unix(), 10)
+		r.Header.Set(headerProxyTimestamp, ts)
+		r.Header.Set(headerProxySignature, SignProxyPlan(testProxySecret, testOwner,
+			r.Header.Get(headerProxyPlan), ts, http.MethodPost, "/v1/extract"))
+	})
+
+	if got := proxyRejects[rejectBadSignature].suppressed.Load(); got != 4 {
+		t.Errorf("bad_signature suppressed = %d, want 4", got)
+	}
+	if got := proxyRejects[rejectStaleTimestamp].suppressed.Load(); got != 0 {
+		t.Errorf("stale_timestamp was suppressed (%d): a bad_signature flood masked it", got)
+	}
+	if proxyRejects[rejectStaleTimestamp].lastLog.Load() == 0 {
+		t.Error("stale_timestamp was never logged")
 	}
 }
