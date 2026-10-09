@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -177,5 +178,35 @@ func TestDefaultAppUsesFreePlan(t *testing.T) {
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		t.Fatal("should not get 401 with valid key")
+	}
+}
+
+func TestPlanResultTTL(t *testing.T) {
+	cases := []struct {
+		hours int
+		want  time.Duration
+	}{
+		{-1, 0}, {0, 0}, {24, 24 * time.Hour},
+		{maxResultRetentionHours, maxResultRetentionHours * time.Hour},
+		{1 << 40, maxResultRetentionHours * time.Hour},
+	}
+	for _, c := range cases {
+		if got := planResultTTL(Plan{ResultRetentionHours: c.hours}); got != c.want {
+			t.Errorf("hours=%d: got %v, want %v", c.hours, got, c.want)
+		}
+	}
+}
+
+func TestCrawlRequestResultTTLSurvivesPayload(t *testing.T) {
+	b, err := json.Marshal(CrawlRequest{URL: "https://example.com", ResultTTL: 48 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out CrawlRequest
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.ResultTTL != 48*time.Hour {
+		t.Errorf("ResultTTL lost in payload round-trip: %v", out.ResultTTL)
 	}
 }

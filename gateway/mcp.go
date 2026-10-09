@@ -303,6 +303,7 @@ func mcpCrawl(c *fiber.Ctx, rpc jsonrpcRequest, params toolCallParams, queue *Qu
 		IncludePatterns: args.IncludePatterns,
 		ExcludePatterns: args.ExcludePatterns,
 		ResolvedIP:      resolvedIP,
+		ResultTTL:       planResultTTL(plan),
 	}
 
 	owner := callerOwner(c)
