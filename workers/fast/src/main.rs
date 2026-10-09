@@ -1,4 +1,5 @@
-use cheetah_fast::{fetch_page, FetchConfig};
+use cheetah_fast::extractors::{self, generic_fetch};
+use cheetah_fast::FetchConfig;
 use clap::Parser;
 use reqwest::Client;
 use serde::Serialize;
@@ -7,9 +8,6 @@ use std::sync::Arc;
 use tokio::signal;
 use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
-
-/// Strategy name reported for a plain page fetch.
-const STRATEGY_GENERIC: &str = "generic";
 
 #[derive(Serialize)]
 struct StatusPayload<'a> {
@@ -39,7 +37,9 @@ struct ResultMetadata<'a> {
     description: &'a str,
     language: &'a str,
     status_code: u16,
-    strategy: &'static str,
+    strategy: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fallback_from: Option<&'a str>,
 }
 
 #[derive(Parser, Debug)]
@@ -206,7 +206,17 @@ async fn main() -> anyhow::Result<()> {
                     let _permit = permit;
                     info!(url = %url, job_id = %job_id, pinned_ip = ?pinned_ip, requested_strategy = ?requested_strategy, "processing job");
 
-                    let result = fetch_page(&client, &url, &cfg, pinned_ip).await;
+                    let outcome = extractors::run_chain(
+                        &client,
+                        &url,
+                        &cfg,
+                        pinned_ip,
+                        requested_strategy.as_deref(),
+                        extractors::lookup,
+                        || generic_fetch(&client, &url, &cfg, pinned_ip),
+                    )
+                    .await;
+                    let result = outcome.result;
                     let result_key = format!("{}:{}", results_prefix, job_id);
 
                     let (payload, title_buf, desc_buf, lang_buf);
@@ -231,7 +241,8 @@ async fn main() -> anyhow::Result<()> {
                                             description: &desc_buf,
                                             language: &lang_buf,
                                             status_code: page.status_code,
-                                            strategy: STRATEGY_GENERIC,
+                                            strategy: &outcome.strategy,
+                                            fallback_from: outcome.fallback_from.as_deref(),
                                         },
                                     },
                                 }],
@@ -285,9 +296,18 @@ mod tests {
             description: "",
             language: "",
             status_code: 200,
-            strategy: STRATEGY_GENERIC,
+            strategy: "generic",
+            fallback_from: None,
         };
         let v: serde_json::Value = serde_json::to_value(&m).unwrap();
         assert_eq!(v["strategy"], "generic");
+        assert!(v.get("fallback_from").is_none());
+
+        let m = ResultMetadata {
+            fallback_from: Some("github_repo"),
+            ..m
+        };
+        let v: serde_json::Value = serde_json::to_value(&m).unwrap();
+        assert_eq!(v["fallback_from"], "github_repo");
     }
 }

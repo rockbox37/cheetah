@@ -8,6 +8,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::net::lookup_host;
 
+pub mod extractors;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("HTTP request failed: {0}")]

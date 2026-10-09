@@ -35,6 +35,8 @@ type PageMetadata struct {
 	StatusCode  int    `json:"status_code"`
 	// Strategy is the extractor that produced the result ("generic" for a plain fetch).
 	Strategy string `json:"strategy,omitempty"`
+	// FallbackFrom names a strategy whose extractor failed before the generic fetch produced this result.
+	FallbackFrom string `json:"fallback_from,omitempty"`
 }
 
 type CrawlRequest struct {
