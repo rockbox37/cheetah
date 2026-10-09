@@ -115,7 +115,10 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 	})
 }
 
-const maxResultRetentionHours = 720
+const (
+	maxResultRetentionHours = 720
+	maxResultRetention      = maxResultRetentionHours * time.Hour
+)
 
 func planResultTTL(plan Plan) time.Duration {
 	h := plan.ResultRetentionHours

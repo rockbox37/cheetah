@@ -210,3 +210,15 @@ func TestCrawlRequestResultTTLSurvivesPayload(t *testing.T) {
 		t.Errorf("ResultTTL lost in payload round-trip: %v", out.ResultTTL)
 	}
 }
+
+func TestEffectiveTTLBounds(t *testing.T) {
+	cases := []struct{ in, want time.Duration }{
+		{-time.Hour, jobTTL}, {0, jobTTL}, {24 * time.Hour, 24 * time.Hour},
+		{maxResultRetention * 10, maxResultRetention},
+	}
+	for _, c := range cases {
+		if got := effectiveTTL(c.in); got != c.want {
+			t.Errorf("effectiveTTL(%v)=%v, want %v", c.in, got, c.want)
+		}
+	}
+}

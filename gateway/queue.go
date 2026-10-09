@@ -47,10 +47,13 @@ func (q *QueueClient) Close() error {
 }
 
 func effectiveTTL(requested time.Duration) time.Duration {
-	if requested > 0 {
-		return requested
+	if requested <= 0 {
+		return jobTTL
 	}
-	return jobTTL
+	if requested > maxResultRetention {
+		return maxResultRetention
+	}
+	return requested
 }
 
 func (q *QueueClient) EnqueueScrape(ctx context.Context, req ScrapeRequest, owner string, stream ...string) (string, error) {
