@@ -13,6 +13,7 @@ type ScrapeRequest struct {
 	Timeout       int              `json:"timeout,omitempty"`
 	Wait          bool             `json:"wait,omitempty"`
 	ResolvedIP    string           `json:"-"`
+	Strategy      string           `json:"-"`
 }
 
 type ScrapeResponse struct {
@@ -32,6 +33,8 @@ type PageMetadata struct {
 	Description string `json:"description,omitempty"`
 	Language    string `json:"language,omitempty"`
 	StatusCode  int    `json:"status_code"`
+	// Strategy is the extractor that produced the result ("generic" for a plain fetch).
+	Strategy string `json:"strategy,omitempty"`
 }
 
 type CrawlRequest struct {

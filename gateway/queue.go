@@ -78,6 +78,7 @@ func (q *QueueClient) EnqueueScrape(ctx context.Context, req ScrapeRequest, owne
 			"url":         req.URL,
 			"format":      req.Format,
 			"resolved_ip": req.ResolvedIP,
+			"strategy":    req.Strategy,
 			"payload":     string(payload),
 		},
 	}).Err()

@@ -8,6 +8,9 @@ use tokio::signal;
 use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
 
+/// Strategy name reported for a plain page fetch.
+const STRATEGY_GENERIC: &str = "generic";
+
 #[derive(Serialize)]
 struct StatusPayload<'a> {
     job_id: &'a str,
@@ -36,6 +39,7 @@ struct ResultMetadata<'a> {
     description: &'a str,
     language: &'a str,
     status_code: u16,
+    strategy: &'static str,
 }
 
 #[derive(Parser, Debug)]
@@ -181,6 +185,15 @@ async fn main() -> anyhow::Result<()> {
                         _ => None,
                     });
 
+                // Strategies this worker has no extractor for are ignored: the
+                // page is fetched generically and reported as such.
+                let requested_strategy = entry.map.get("strategy").and_then(|v| match v {
+                    redis::Value::BulkString(bytes) if !bytes.is_empty() => {
+                        Some(String::from_utf8_lossy(bytes).to_string())
+                    }
+                    _ => None,
+                });
+
                 let permit = semaphore.clone().acquire_owned().await.unwrap();
                 let client = http_client.clone();
                 let cfg = config.clone();
@@ -191,7 +204,7 @@ async fn main() -> anyhow::Result<()> {
 
                 tokio::spawn(async move {
                     let _permit = permit;
-                    info!(url = %url, job_id = %job_id, pinned_ip = ?pinned_ip, "processing job");
+                    info!(url = %url, job_id = %job_id, pinned_ip = ?pinned_ip, requested_strategy = ?requested_strategy, "processing job");
 
                     let result = fetch_page(&client, &url, &cfg, pinned_ip).await;
                     let result_key = format!("{}:{}", results_prefix, job_id);
@@ -218,6 +231,7 @@ async fn main() -> anyhow::Result<()> {
                                             description: &desc_buf,
                                             language: &lang_buf,
                                             status_code: page.status_code,
+                                            strategy: STRATEGY_GENERIC,
                                         },
                                     },
                                 }],
@@ -258,4 +272,22 @@ async fn main() -> anyhow::Result<()> {
 
     info!("shutdown complete");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn result_metadata_reports_strategy() {
+        let m = ResultMetadata {
+            title: "t",
+            description: "",
+            language: "",
+            status_code: 200,
+            strategy: STRATEGY_GENERIC,
+        };
+        let v: serde_json::Value = serde_json::to_value(&m).unwrap();
+        assert_eq!(v["strategy"], "generic");
+    }
 }

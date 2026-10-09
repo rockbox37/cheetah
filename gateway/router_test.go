@@ -225,3 +225,61 @@ func TestScrapeAllowsFastOnFreePlan(t *testing.T) {
 		t.Fatal("fast tier URL should be allowed on free plan")
 	}
 }
+
+func TestClassifyURLPlatformStrategies(t *testing.T) {
+	tests := []struct {
+		url      string
+		strategy string
+	}{
+		{"https://github.com/rockbox37/cheetah", StrategyGitHubRepo},
+		{"https://www.github.com/rockbox37/cheetah/issues/5", StrategyGitHubRepo},
+		{"https://github.com/rockbox37/cheetah/blob/main/README.md", StrategyGitHubRepo},
+		{"https://news.ycombinator.com/item?id=12345", StrategyHNThread},
+		// Not platform content: no strategy.
+		{"https://github.com/", ""},
+		{"https://github.com/rockbox37", ""},
+		{"https://github.com/settings/profile", ""},
+		{"https://github.com/topics/go", ""},
+		{"https://news.ycombinator.com/", ""},
+		{"https://news.ycombinator.com/item?id=abc", ""},
+		{"https://news.ycombinator.com/item", ""},
+		{"https://notgithub.com/a/b", ""},
+		{"https://github.com.evil.example/a/b", ""},
+		{"https://example.com/a/b", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.url, func(t *testing.T) {
+			d := ClassifyURL(tt.url)
+			if d.Strategy != tt.strategy {
+				t.Fatalf("ClassifyURL(%q).Strategy = %q, want %q (reason: %s)", tt.url, d.Strategy, tt.strategy, d.Reason)
+			}
+			if tt.strategy != "" && d.Tier != TierFast {
+				t.Fatalf("platform strategy should route to the fast tier, got %s", d.Tier)
+			}
+		})
+	}
+}
+
+func TestClassifyURLPlatformDoesNotChangeOtherRouting(t *testing.T) {
+	// Protected domains keep routing to stealth with no strategy.
+	for _, u := range []string{"https://x.com/user/status/1", "https://www.linkedin.com/in/someone"} {
+		d := ClassifyURL(u)
+		if d.Tier != TierStealth || d.Strategy != "" {
+			t.Fatalf("ClassifyURL(%q) = tier %s strategy %q, want stealth with no strategy", u, d.Tier, d.Strategy)
+		}
+	}
+}
+
+func TestPageMetadataStrategyOmittedWhenEmpty(t *testing.T) {
+	b, err := json.Marshal(PageMetadata{Title: "t", StatusCode: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(b, []byte("strategy")) {
+		t.Fatalf("strategy should be omitted when empty: %s", b)
+	}
+	b, _ = json.Marshal(PageMetadata{Title: "t", StatusCode: 200, Strategy: "generic"})
+	if !bytes.Contains(b, []byte(`"strategy":"generic"`)) {
+		t.Fatalf("strategy missing: %s", b)
+	}
+}

@@ -235,7 +235,7 @@ func mcpScrape(c *fiber.Ctx, rpc jsonrpcRequest, params toolCallParams, queue *Q
 
 	owner := callerOwner(c)
 	stream := StreamForTier(decision.Tier)
-	scrapeReq := ScrapeRequest{URL: args.URL, Format: args.Format, ResolvedIP: resolvedIP}
+	scrapeReq := ScrapeRequest{URL: args.URL, Format: args.Format, ResolvedIP: resolvedIP, Strategy: decision.Strategy}
 	jobID, err := queue.EnqueueScrape(c.Context(), scrapeReq, owner, stream)
 	if err != nil {
 		log.Printf("mcp enqueue scrape error: %v", err)
@@ -357,6 +357,7 @@ func mcpExtract(c *fiber.Ctx, rpc jsonrpcRequest, params toolCallParams, queue *
 		Format:        "markdown",
 		ExtractSchema: (*json.RawMessage)(&args.ExtractSchema),
 		ResolvedIP:    resolvedIP,
+		Strategy:      decision.Strategy,
 	}
 
 	owner := callerOwner(c)
