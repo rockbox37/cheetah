@@ -278,6 +278,13 @@ func TestPageMetadataStrategyOmittedWhenEmpty(t *testing.T) {
 	if bytes.Contains(b, []byte("strategy")) {
 		t.Fatalf("strategy should be omitted when empty: %s", b)
 	}
+	if bytes.Contains(b, []byte("fallback_from")) {
+		t.Fatalf("fallback_from should be omitted when empty: %s", b)
+	}
+	b, _ = json.Marshal(PageMetadata{Title: "t", StatusCode: 200, Strategy: "generic", FallbackFrom: "github_repo"})
+	if !bytes.Contains(b, []byte(`"fallback_from":"github_repo"`)) {
+		t.Fatalf("fallback_from missing: %s", b)
+	}
 	b, _ = json.Marshal(PageMetadata{Title: "t", StatusCode: 200, Strategy: "generic"})
 	if !bytes.Contains(b, []byte(`"strategy":"generic"`)) {
 		t.Fatalf("strategy missing: %s", b)
