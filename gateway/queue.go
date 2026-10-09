@@ -47,10 +47,13 @@ func (q *QueueClient) Close() error {
 }
 
 func effectiveTTL(requested time.Duration) time.Duration {
-	if requested > 0 {
-		return requested
+	if requested <= 0 {
+		return jobTTL
 	}
-	return jobTTL
+	if requested > maxResultRetention {
+		return maxResultRetention
+	}
+	return requested
 }
 
 func (q *QueueClient) EnqueueScrape(ctx context.Context, req ScrapeRequest, owner string, stream ...string) (string, error) {
@@ -82,13 +85,12 @@ func (q *QueueClient) EnqueueScrape(ctx context.Context, req ScrapeRequest, owne
 		return "", fmt.Errorf("enqueue scrape job: %w", err)
 	}
 
-	ttl := effectiveTTL(req.ResultTTL)
 	pipe := q.rdb.Pipeline()
 	pipe.Set(ctx, jobKey(jobID), mustMarshal(JobStatus{
 		JobID:  jobID,
 		Status: "queued",
-	}), ttl)
-	pipe.Set(ctx, ownerKey(jobID), owner, ttl)
+	}), jobTTL)
+	pipe.Set(ctx, ownerKey(jobID), owner, jobTTL)
 	if _, err = pipe.Exec(ctx); err != nil {
 		return "", fmt.Errorf("set initial job status: %w", err)
 	}

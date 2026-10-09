@@ -361,13 +361,22 @@ func extractTitle(htmlContent string) string {
 	}
 }
 
+// writeJob stores the job status and refreshes the owner key so the two
+// expire together and results are never orphaned from their owner.
+func (cm *CrawlManager) writeJob(jobID string, js JobStatus, ttl time.Duration) {
+	ctx := context.Background()
+	ttl = effectiveTTL(ttl)
+	cm.queue.rdb.Set(ctx, jobKey(jobID), mustMarshal(js), ttl)
+	cm.queue.rdb.Expire(ctx, ownerKey(jobID), ttl)
+}
+
 func (cm *CrawlManager) updateJobStatus(jobID string, status string, pagesCompleted int, ttl time.Duration) {
 	jobStatus := JobStatus{
 		JobID:          jobID,
 		Status:         status,
 		PagesCompleted: pagesCompleted,
 	}
-	cm.queue.rdb.Set(context.Background(), jobKey(jobID), mustMarshal(jobStatus), effectiveTTL(ttl))
+	cm.writeJob(jobID, jobStatus, ttl)
 }
 
 func (cm *CrawlManager) failJob(jobID string, reason string, ttl time.Duration) {
@@ -400,5 +409,5 @@ func (cm *CrawlManager) finalizeJob(jobID string, status string, pagesTotal int,
 		PagesCompleted: pagesTotal,
 		Results:        scrapeResults,
 	}
-	cm.queue.rdb.Set(context.Background(), jobKey(jobID), mustMarshal(jobStatus), effectiveTTL(ttl))
+	cm.writeJob(jobID, jobStatus, ttl)
 }
